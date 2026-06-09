@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Face Recognition</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=pcd3">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Face Recognition</h1>
+          <p id="dbStatus">Menghubungkan database...</p>
+        </div>
+        <div class="top-actions">
+          <a class="link-button" href="/database">Database</a>
+          <div class="status-pill" id="cameraStatus">Kamera nonaktif</div>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <div class="main-column">
+          <div class="camera-panel">
+            <div class="video-wrap">
+              <video id="video" autoplay playsinline muted></video>
+              <canvas id="overlay"></canvas>
+            </div>
+            <div class="toolbar">
+              <button id="startCamera" type="button">Nyalakan Kamera</button>
+              <button id="toggleRecognize" type="button" disabled>Mulai Deteksi</button>
+              <label class="toggle-control" for="mirrorCamera">
+                <input id="mirrorCamera" type="checkbox" checked>
+                <span>Mirror</span>
+              </label>
+            </div>
+          </div>
+
+          <section class="pipeline-panel">
+            <div class="section-head">
+              <h2>Tahapan Citra Realtime</h2>
+              <span id="pipelineStatus" class="small-muted">Menunggu kamera</span>
+            </div>
+            <div class="pipeline-grid">
+              <div class="stage-card">
+                <canvas id="stageOriginal"></canvas>
+                <div class="stage-label">
+                  <strong>1. RGB asli</strong>
+                  <small id="stageOriginalNote">Frame masuk mirror</small>
+                </div>
+              </div>
+              <div class="stage-card">
+                <canvas id="stageGray"></canvas>
+                <div class="stage-label">
+                  <strong>2. Grayscale</strong>
+                  <small>Konversi luminance</small>
+                </div>
+              </div>
+              <div class="stage-card">
+                <canvas id="stageResize"></canvas>
+                <div class="stage-label">
+                  <strong>3. Resize 50%</strong>
+                  <small>Frame diperkecil untuk proses</small>
+                </div>
+              </div>
+              <div class="stage-card">
+                <canvas id="stageResult"></canvas>
+                <div class="stage-label">
+                  <strong>4. Deteksi</strong>
+                  <small>Kotak wajah dan label</small>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <aside class="side-panel">
+          <section class="section">
+            <h2>Registrasi</h2>
+            <div class="form-row">
+              <input id="nameInput" type="text" autocomplete="off" placeholder="Nama wajah">
+              <button id="registerBtn" type="button" disabled>Daftarkan</button>
+            </div>
+            <div class="progress">
+              <div id="progressBar"></div>
+            </div>
+            <p id="registerStatus" class="muted">0/5 sample</p>
+          </section>
+
+          <section class="section metric-section">
+            <div class="section-head">
+              <h2>Angka & Rumus</h2>
+              <span id="mathStatus" class="small-muted">Realtime</span>
+            </div>
+            <div class="metric-grid">
+              <div class="metric-card">
+                <small>Resolusi</small>
+                <strong id="metricResolution">-</strong>
+              </div>
+              <div class="metric-card">
+                <small>Piksel/frame</small>
+                <strong id="metricPixels">-</strong>
+              </div>
+              <div class="metric-card">
+                <small>Resize</small>
+                <strong id="metricResize">50%</strong>
+              </div>
+              <div class="metric-card">
+                <small>Beban proses</small>
+                <strong id="metricReduction">-</strong>
+              </div>
+              <div class="metric-card">
+                <small>FPS pipeline</small>
+                <strong id="metricFps">-</strong>
+              </div>
+              <div class="metric-card">
+                <small>Wajah</small>
+                <strong id="metricFaces">0</strong>
+              </div>
+              <div class="metric-card">
+                <small>FPS AI</small>
+                <strong id="metricAiFps">-</strong>
+              </div>
+              <div class="metric-card">
+                <small>Waktu proses</small>
+                <strong id="metricProcessTime">-</strong>
+              </div>
+            </div>
+            <div class="formula-list">
+              <div class="formula-row">
+                <span>Gray</span>
+                <div>
+                  <div class="math-display">
+                    <i>I</i>(x,y) = 0.299<i>R</i> + 0.587<i>G</i> + 0.114<i>B</i>
+                  </div>
+                  <code id="formulaGray">Y = 0.299R + 0.587G + 0.114B</code>
+                </div>
+              </div>
+              <div class="formula-row">
+                <span>Normal</span>
+                <div>
+                  <div class="math-display">
+                    <i>I'</i>(x,y) =
+                    <span class="fraction"><span><i>I</i>(x,y)</span><span>255</span></span>
+                  </div>
+                  <code id="formulaNormalize">I'(x,y) = I(x,y) / 255</code>
+                </div>
+              </div>
+              <div class="formula-row">
+                <span>Resize</span>
+                <div>
+                  <div class="math-display">
+                    <i>W'</i> = 0.5<i>W</i>, &nbsp; <i>H'</i> = 0.5<i>H</i>
+                  </div>
+                  <code id="formulaResize">W' = 0.5W, H' = 0.5H</code>
+                </div>
+              </div>
+              <div class="formula-row">
+                <span>Distance</span>
+                <div>
+                  <div class="math-display">
+                    <i>d</i> = sqrt(&Sigma;<sub>i=1</sub><sup>n</sup>(<i>x</i><sub>i</sub> - <i>y</i><sub>i</sub>)<sup>2</sup>)
+                  </div>
+                  <code id="formulaDistance">d = sqrt(sum((a-b)^2))</code>
+                </div>
+              </div>
+              <div class="formula-row">
+                <span>Cosine</span>
+                <div>
+                  <div class="math-display">
+                    cos(&theta;) =
+                    <span class="fraction">
+                      <span><i>A</i> . <i>B</i></span>
+                      <span>|<i>A</i>| |<i>B</i>|</span>
+                    </span>
+                  </div>
+                  <code id="formulaCosine">cos(theta) = (A . B) / (|A| |B|)</code>
+                </div>
+              </div>
+              <div class="formula-row">
+                <span>Keputusan</span>
+                <div>
+                  <div class="math-display cases">
+                    <span>Status =</span>
+                    <span class="case-brace">{</span>
+                    <span>Dikenali, jika <i>d</i> &le; <i>T</i><br>Tidak Dikenali, jika <i>d</i> &gt; <i>T</i></span>
+                  </div>
+                  <code id="formulaDecision">d <= 0.6</code>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head">
+              <h2>Database</h2>
+              <button id="refreshFaces" type="button">Refresh</button>
+            </div>
+            <div id="faceList" class="face-list"></div>
+          </section>
+
+          <section class="section">
+            <h2>Hasil</h2>
+            <div id="resultList" class="result-list"></div>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script src="{{ url_for('static', filename='app.js') }}?v=pcd3"></script>
+  </body>
+</html>

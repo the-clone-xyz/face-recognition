@@ -2,6 +2,7 @@
 venv/
 env/
 ENV/
+.venv/
 
 # Python cache
 __pycache__/
@@ -13,9 +14,12 @@ __pycache__/
 
 # Database files
 face_database.json
+face_database.pkl
+.env
 
 # Log files
 recognition_log.txt
+.runtime-logs/
 
 # OS files
 .DS_Store

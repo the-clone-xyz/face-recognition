@@ -11,7 +11,6 @@ import queue
 import cv2
 import face_recognition
 import numpy as np
-import json
 import os
 import threading
 import time
@@ -21,6 +20,13 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from PIL import Image, ImageTk
 from datetime import datetime
+from face_db import FaceDatabase
+from pcd_utils import (
+    calculate_fps,
+    convert_to_grayscale_bgr,
+    normalize_pixels,
+    recognize_face,
+)
 
 # ──────────────────────────────────────────────
 # KONFIGURASI LOGGING TERMINAL
@@ -35,9 +41,8 @@ logger = logging.getLogger("FaceRecSys")
 # ──────────────────────────────────────────────
 # KONFIGURASI GLOBAL
 # ──────────────────────────────────────────────
-DB_FILE        = "face_database.json"
 LOG_FILE       = "recognition_log.txt"
-TOLERANCE      = 0.5    
+TOLERANCE      = 0.6
 FRAME_SCALE    = 0.35   
 UNKNOWN_LABEL  = "Tidak Dikenal"
 UI_REFRESH_MS  = 15     # Target ~60 FPS Render
@@ -55,21 +60,27 @@ FLOW_MAX_STEP = 45.0
 # KELAS ANIMASI & TRACKING (Anti-Patah & Anti-Kedip)
 # ──────────────────────────────────────────────
 class SmoothBox:
-    def __init__(self, top, right, bottom, left, name, conf):
+    def __init__(self, top, right, bottom, left, name, conf, status="Tidak Dikenali", distance=None, cosine=None):
         self.top, self.right, self.bottom, self.left = top, right, bottom, left
         self.t_top, self.t_right, self.t_bottom, self.t_left = top, right, bottom, left
         self.name = name
         self.conf = conf
+        self.status = status
+        self.distance = distance
+        self.cosine = cosine
         self.last_seen = time.time()
         self.last_ai_seen = self.last_seen
         self.flow_points = None
         self.last_flow_seed = 0.0
 
-    def update_target(self, top, right, bottom, left, name, conf):
+    def update_target(self, top, right, bottom, left, name, conf, status="Tidak Dikenali", distance=None, cosine=None):
         self.t_top, self.t_right, self.t_bottom, self.t_left = top, right, bottom, left
         if name != UNKNOWN_LABEL or self.name == UNKNOWN_LABEL:
             self.name = name
             self.conf = conf
+            self.status = status
+            self.distance = distance
+            self.cosine = cosine
         now = time.time()
         self.last_seen = now
         self.last_ai_seen = now
@@ -102,59 +113,11 @@ class SmoothBox:
         self.left += (self.t_left - self.left) * speed
 
 # ──────────────────────────────────────────────
-# DATABASE MANAGER (Secure JSON Storage)
-# ──────────────────────────────────────────────
-class FaceDatabase:
-    def __init__(self, db_path: str = DB_FILE):
-        self.db_path = db_path
-        self.known_encodings: list[np.ndarray] = []
-        self.known_names: list[str] = []
-        self.load()
-
-    def load(self):
-        if os.path.exists(self.db_path):
-            try:
-                with open(self.db_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                self.known_encodings = [np.array(enc) for enc in data.get("encodings", [])]
-                self.known_names     = data.get("names", [])
-                logger.info(f"Database dimuat: {len(self.known_names)} identitas terdaftar.")
-            except Exception as e: 
-                logger.error(f"Gagal memuat database: {e}")
-        else:
-            logger.warning("Database tidak ditemukan. Memulai database kosong baru.")
-
-    def save(self):
-        try:
-            data = {"names": self.known_names, "encodings": [enc.tolist() for enc in self.known_encodings]}
-            with open(self.db_path, "w", encoding="utf-8") as f:
-                json.dump(data, f)
-            logger.info("Perubahan database berhasil disimpan.")
-        except Exception as e: 
-            logger.error(f"Gagal menyimpan database: {e}")
-
-    def add_face(self, name: str, encoding: np.ndarray):
-        self.known_encodings.append(encoding)
-        self.known_names.append(name)
-        self.save()
-
-    def remove_face(self, name: str) -> int:
-        indices = [i for i, n in enumerate(self.known_names) if n == name]
-        for i in sorted(indices, reverse=True):
-            self.known_encodings.pop(i)
-            self.known_names.pop(i)
-        if indices: self.save()
-        return len(indices)
-
-    def unique_names(self) -> list[str]: return sorted(set(self.known_names))
-    def count(self) -> int: return len(self.known_names)
-
-# ──────────────────────────────────────────────
 # AI WORKER PROCESS (Multi-core, Bypass GIL)
 # ──────────────────────────────────────────────
-def ai_worker_process(task_queue: mp.Queue, result_queue: mp.Queue, db_path: str):
+def ai_worker_process(task_queue: mp.Queue, result_queue: mp.Queue):
     logger.info("AI Worker Process berjalan di background core.")
-    db = FaceDatabase(db_path)
+    db = FaceDatabase()
     
     # PERBAIKAN: Gunakan desimal (float) agar kotak presisi di tengah wajah!
     scale = 1.0 / FRAME_SCALE 
@@ -172,12 +135,12 @@ def ai_worker_process(task_queue: mp.Queue, result_queue: mp.Queue, db_path: str
             continue
 
         if command == "PROCESS":
+            started_at = time.time()
             if len(payload) == 3:
                 seq, mode, rgb_small = payload
             else:
                 seq = 0
                 mode, rgb_small = payload
-
             locations = face_recognition.face_locations(rgb_small, model="hog")
             
             if mode == "recognize":
@@ -186,14 +149,18 @@ def ai_worker_process(task_queue: mp.Queue, result_queue: mp.Queue, db_path: str
                     encodings = face_recognition.face_encodings(rgb_small, locations)
                     for enc, (top, right, bottom, left) in zip(encodings, locations):
                         name, confidence = UNKNOWN_LABEL, 0.0
+                        distance, cosine, status = None, None, "Tidak Dikenali"
                         if db.known_encodings:
-                            distances = face_recognition.face_distance(db.known_encodings, enc)
-                            best_idx  = int(np.argmin(distances))
-                            if distances[best_idx] <= TOLERANCE:
-                                name = db.known_names[best_idx]
-                                confidence = round((1 - distances[best_idx]) * 100, 1)
-                        results.append((top * scale, right * scale, bottom * scale, left * scale, name, confidence))
-                result_queue.put(("RECOGNIZE_RESULT", seq, mode, results))
+                            metrics = recognize_face(enc, db.known_encodings, TOLERANCE)
+                            distance = metrics.distance
+                            cosine = metrics.cosine_similarity
+                            status = metrics.status
+                            confidence = metrics.confidence
+                            if metrics.best_index is not None and metrics.status == "Dikenali":
+                                name = db.known_names[metrics.best_index]
+                        results.append((top * scale, right * scale, bottom * scale, left * scale, name, confidence, status, distance, cosine))
+                process_time, fps = calculate_fps(started_at)
+                result_queue.put(("RECOGNIZE_RESULT", seq, mode, results, process_time, fps))
 
             elif mode == "register":
                 encodings = face_recognition.face_encodings(rgb_small, locations) if locations else []
@@ -230,6 +197,10 @@ class FaceRecognitionApp(tk.Tk):
         self._latest_result_seq = 0
         self._last_ai_submit = 0.0
         self._prev_gray = None
+        self.last_process_time = 0.0
+        self.last_fps = 0.0
+        self.last_gray_mean = 0.0
+        self.last_normalized_mean = 0.0
         
         self.reg_name = ""
         self.reg_encodings = []
@@ -277,6 +248,11 @@ class FaceRecognitionApp(tk.Tk):
         logger.info("Mengakses feed video...")
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         if not cap.isOpened(): cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            logger.error("Kamera tidak terbuka. Periksa izin kamera atau indeks VideoCapture.")
+            self.after(0, lambda: self.status_var.set("❌ Kamera tidak terbuka. Periksa izin kamera."))
+            self.running = False
+            return
         
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -287,7 +263,10 @@ class FaceRecognitionApp(tk.Tk):
 
         while self.running:
             ret, frame = cap.read()
-            if not ret: continue
+            if not ret:
+                logger.warning("Frame kamera gagal dibaca.")
+                time.sleep(0.05)
+                continue
             
             frame = cv2.flip(frame, 1)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -298,7 +277,16 @@ class FaceRecognitionApp(tk.Tk):
                 self._prev_gray = gray
 
             self.current_frame = frame 
-            self._submit_frame_for_ai(frame)
+            try:
+                # PCD: grayscale menerapkan I(x,y)=0.299R+0.587G+0.114B.
+                # Normalisasi menerapkan I'(x,y)=I(x,y)/255 untuk analisis intensitas 0..1.
+                pcd_gray = convert_to_grayscale_bgr(frame)
+                normalized = normalize_pixels(pcd_gray)
+                self.last_gray_mean = float(np.mean(pcd_gray))
+                self.last_normalized_mean = float(np.mean(normalized))
+                self._submit_frame_for_ai(frame)
+            except Exception as e:
+                logger.error(f"Gagal menghitung metrik PCD frame: {e}")
                 
         cap.release()
         logger.info("Kamera dinonaktifkan.")
@@ -468,6 +456,9 @@ class FaceRecognitionApp(tk.Tk):
                         continue
 
                     ai_boxes = result[3] if msg_type == "RECOGNIZE_RESULT" else result[4]
+                    if msg_type == "RECOGNIZE_RESULT":
+                        self.last_process_time = result[4]
+                        self.last_fps = result[5]
                     log_events = []
 
                     with self.box_lock:
@@ -475,10 +466,11 @@ class FaceRecognitionApp(tk.Tk):
 
                         for item in ai_boxes:
                             if msg_type == "RECOGNIZE_RESULT":
-                                t, r, b, l, name, conf = item
+                                t, r, b, l, name, conf, status, distance, cosine = item
                             else:
                                 t, r, b, l = item
                                 name, conf = self.reg_name, 0.0
+                                status, distance, cosine = "Registrasi", None, None
 
                             cx, cy = (l + r) / 2, (t + b) / 2
                             best_idx = None
@@ -491,13 +483,13 @@ class FaceRecognitionApp(tk.Tk):
                                 dist = math.hypot(cx - bx, cy - by)
                                 if dist < TRACK_RADIUS and dist < best_dist:
                                     best_dist = dist
-                                    best_idx = idx
+                                best_idx = idx
 
                             if best_idx is not None:
-                                self.animated_boxes[best_idx].update_target(t, r, b, l, name, conf)
+                                self.animated_boxes[best_idx].update_target(t, r, b, l, name, conf, status, distance, cosine)
                                 matched_indices.add(best_idx)
                             else:
-                                self.animated_boxes.append(SmoothBox(t, r, b, l, name, conf))
+                                self.animated_boxes.append(SmoothBox(t, r, b, l, name, conf, status, distance, cosine))
 
                             if msg_type == "RECOGNIZE_RESULT" and name != UNKNOWN_LABEL:
                                 log_events.append((name, conf))
@@ -539,17 +531,38 @@ class FaceRecognitionApp(tk.Tk):
 
                     # Konversi Float ke Int KHUSUS SAAT MENGGAMBAR, jangan di logic kalkulasi
                     t, r, b, l = int(box.top), int(box.right), int(box.bottom), int(box.left)
-                    boxes_to_draw.append((t, r, b, l, box.name, box.conf))
+                    boxes_to_draw.append((t, r, b, l, box.name, box.conf, box.status, box.distance, box.cosine))
 
-            for t, r, b, l, name, conf in boxes_to_draw:
+            for t, r, b, l, name, conf, status, distance, cosine in boxes_to_draw:
                 color = (0, 220, 100) if name != UNKNOWN_LABEL else (0, 80, 220)
                 label = f"{name} ({conf}%)" if self.mode == "recognize" and name != UNKNOWN_LABEL else (
                         f"Registrasi: {self.reg_name}" if self.mode in ("register", "saving") else UNKNOWN_LABEL)
+                distance_text = "-" if distance is None else f"{distance:.4f}"
+                cosine_text = "-" if cosine is None else f"{cosine:.4f}"
+                info_lines = [
+                    f"Nama: {name}",
+                    f"Status: {status}",
+                    f"Distance: {distance_text}",
+                    f"Threshold: {TOLERANCE:.2f}",
+                    f"Cosine: {cosine_text}",
+                ]
                 
                 cv2.rectangle(display_frame, (l, t), (r, b), color, 2)
                 (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
                 cv2.rectangle(display_frame, (l, b), (l + tw + 8, b + th + 10), color, cv2.FILLED)
                 cv2.putText(display_frame, label, (l + 4, b + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+
+                y_info = max(20, t - 92)
+                for idx, text in enumerate(info_lines):
+                    cv2.putText(display_frame, text, (l, y_info + idx * 18),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.46, color, 1)
+
+            cv2.putText(display_frame, f"FPS: {self.last_fps:.2f}", (10, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 255, 0), 2)
+            cv2.putText(display_frame, f"Process Time: {self.last_process_time:.4f}s", (10, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.62, (0, 255, 0), 2)
+            cv2.putText(display_frame, f"Gray mean: {self.last_gray_mean:.2f} | Norm mean: {self.last_normalized_mean:.4f}", (10, 76),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (180, 220, 255), 1)
 
             img_rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
             img_tk = ImageTk.PhotoImage(Image.fromarray(img_rgb))
@@ -682,7 +695,7 @@ if __name__ == "__main__":
     result_queue = mp.Queue()
     
     # Memulai OS Process terpisah untuk memecah beban CPU
-    ai_process = mp.Process(target=ai_worker_process, args=(task_queue, result_queue, DB_FILE))
+    ai_process = mp.Process(target=ai_worker_process, args=(task_queue, result_queue))
     ai_process.daemon = True
     ai_process.start()
     

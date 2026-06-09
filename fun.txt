@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+set -e
+
+cd /workspaces/face-recognition
+LOG_DIR=/workspaces/face-recognition/.runtime-logs
+mkdir -p "$LOG_DIR"
+
+as_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+as_mysql_user() {
+  if [ "$(id -u)" -eq 0 ]; then
+    runuser -u mysql -- "$@"
+  else
+    sudo -u mysql "$@"
+  fi
+}
+
+echo "Menghentikan proses lama jika masih berjalan..."
+pkill -f "php8.3 -S 0.0.0.0:8080" >/dev/null 2>&1 || true
+pkill -f "web_app.py" >/dev/null 2>&1 || true
+
+echo "Menjalankan MariaDB lokal..."
+as_root install -d -o mysql -g mysql /run/mysqld
+
+if ! as_root mysqladmin --socket=/run/mysqld/mysqld.sock ping >/dev/null 2>&1; then
+  as_mysql_user mariadbd \
+    --datadir=/var/lib/mysql \
+    --bind-address=127.0.0.1 \
+    --port=3306 \
+    --socket=/run/mysqld/mysqld.sock \
+    >"$LOG_DIR/mariadb.log" 2>&1 &
+fi
+
+echo "Menunggu MariaDB siap..."
+until as_root mysqladmin --socket=/run/mysqld/mysqld.sock ping >/dev/null 2>&1; do
+  sleep 1
+done
+
+echo "Menyiapkan database dan user aplikasi..."
+as_root mysql --socket=/run/mysqld/mysqld.sock -e "
+CREATE DATABASE IF NOT EXISTS facerecognition;
+CREATE USER IF NOT EXISTS 'facerec_user'@'127.0.0.1' IDENTIFIED BY 'facerec_password';
+CREATE USER IF NOT EXISTS 'facerec_user'@'localhost' IDENTIFIED BY 'facerec_password';
+GRANT ALL PRIVILEGES ON facerecognition.* TO 'facerec_user'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON facerecognition.* TO 'facerec_user'@'localhost';
+FLUSH PRIVILEGES;
+"
+
+mysql -h127.0.0.1 -P3306 -ufacerec_user -pfacerec_password facerecognition < docker/mysql/init.sql
+
+echo "Menjalankan Web App di port 5001..."
+PORT=5001 .venv/bin/python web_app.py >"$LOG_DIR/web-app.log" 2>&1 &
+WEB_PID=$!
+
+echo "Menjalankan phpMyAdmin di port 8080..."
+php8.3 -S 0.0.0.0:8080 -t /usr/share/phpmyadmin >"$LOG_DIR/phpmyadmin.log" 2>&1 &
+PHPMYADMIN_PID=$!
+
+echo "Menunggu Web App dan phpMyAdmin siap..."
+for port in 5001 8080; do
+  for i in $(seq 1 30); do
+    if curl -fsS "http://127.0.0.1:$port/" >/dev/null 2>&1; then
+      break
+    fi
+    if [ "$i" -eq 30 ]; then
+      echo "Service port $port belum merespons. Cek log di $LOG_DIR."
+      exit 1
+    fi
+    sleep 1
+  done
+done
+
+cleanup() {
+  echo ""
+  echo "Menghentikan Web App dan phpMyAdmin..."
+  kill "$WEB_PID" "$PHPMYADMIN_PID" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+echo ""
+echo "Semua service berjalan:"
+echo "- Web App:    http://127.0.0.1:5001"
+echo "- phpMyAdmin: http://127.0.0.1:8080"
+echo ""
+echo "Log:"
+echo "- MariaDB:    $LOG_DIR/mariadb.log"
+echo "- Web App:    $LOG_DIR/web-app.log"
+echo "- phpMyAdmin: $LOG_DIR/phpmyadmin.log"
+echo ""
+echo "Jangan tutup terminal ini selama memakai aplikasi."
+echo "Tekan Ctrl+C untuk menghentikan Web App dan phpMyAdmin."
+
+wait "$WEB_PID" "$PHPMYADMIN_PID"

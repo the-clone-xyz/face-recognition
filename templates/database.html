@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Database Face Recognition</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Database Wajah</h1>
+          <p>{{ config.database }} di {{ config.host }}:{{ config.port }}</p>
+        </div>
+        <a class="link-button" href="/">Buka Kamera</a>
+      </header>
+
+      <section class="db-page section">
+        {% if error %}
+          <div class="error-state">{{ error }}</div>
+        {% elif rows %}
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Nama</th>
+                  <th>Dimensi</th>
+                  <th>Nilai Awal Encoding</th>
+                  <th>Dibuat</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in rows %}
+                  <tr>
+                    <td>{{ row.id }}</td>
+                    <td>{{ row.name }}</td>
+                    <td>{{ row.dimensions }}</td>
+                    <td><code>{{ row.first_value }}</code></td>
+                    <td>{{ row.created_at }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="empty-state">Tabel faces masih kosong.</div>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

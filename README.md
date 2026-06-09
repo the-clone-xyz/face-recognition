@@ -15,7 +15,45 @@ face_recognition_project/
 
 ---
 
-## ⚙️ Instalasi (Ikuti Urutan Ini!)
+## ⚙️ Instalasi Codespace
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip "setuptools<81" wheel
+.venv/bin/python -m pip install -r requirements.txt
+docker compose up -d
+```
+
+phpMyAdmin berjalan di port `8080`.
+
+Login default:
+
+| Field | Nilai |
+|-------|-------|
+| Server | `mysql` |
+| Username | `facerec_user` |
+| Password | `facerec_password` |
+| Database | `facerecognition` |
+
+Konfigurasi koneksi aplikasi bisa diubah lewat environment variable:
+
+```bash
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=facerec_user
+DB_PASSWORD=facerec_password
+DB_NAME=facerecognition
+```
+
+Untuk migrasi database lama ke MySQL:
+
+```bash
+.venv/bin/python migrate_local_db.py face_database.pkl
+```
+
+---
+
+## ⚙️ Instalasi Windows Lama (Ikuti Urutan Ini!)
 
 ### Langkah 1 — Pastikan Build Tools tersedia
 

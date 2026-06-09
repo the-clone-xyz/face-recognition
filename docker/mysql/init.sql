@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS faces (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    encoding JSON NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_faces_name (name)
+);
