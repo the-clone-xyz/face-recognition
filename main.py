@@ -44,6 +44,12 @@ UI_REFRESH_MS  = 15     # Target ~60 FPS Render
 SMOOTH_SPEED   = 0.35   # Kecepatan animasi Lerp kotak pelacak
 GRACE_PERIOD   = 1.5    # Toleransi wajah hilang sebelum kotak dihapus
 TRACK_RADIUS   = 250    # Jarak toleransi pergerakan wajah antar-frame
+AI_MIN_INTERVAL = 0.06   # Batasi beban AI, tetapi tetap responsif
+AI_CONFIRM_GRACE = 2.2   # Kotak tetap hidup sebentar saat AI miss sesaat
+FLOW_MAX_POINTS = 80
+FLOW_MIN_POINTS = 8
+FLOW_RESEED_INTERVAL = 0.45
+FLOW_MAX_STEP = 45.0
 
 # ──────────────────────────────────────────────
 # KELAS ANIMASI & TRACKING (Anti-Patah & Anti-Kedip)
@@ -55,20 +61,45 @@ class SmoothBox:
         self.name = name
         self.conf = conf
         self.last_seen = time.time()
+        self.last_ai_seen = self.last_seen
+        self.flow_points = None
+        self.last_flow_seed = 0.0
 
     def update_target(self, top, right, bottom, left, name, conf):
         self.t_top, self.t_right, self.t_bottom, self.t_left = top, right, bottom, left
         if name != UNKNOWN_LABEL or self.name == UNKNOWN_LABEL:
             self.name = name
             self.conf = conf
+        now = time.time()
+        self.last_seen = now
+        self.last_ai_seen = now
+        self.flow_points = None
+        self.last_flow_seed = 0.0
+
+    def apply_motion(self, dx, dy):
+        self.left += dx
+        self.right += dx
+        self.t_left += dx
+        self.t_right += dx
+        self.top += dy
+        self.bottom += dy
+        self.t_top += dy
+        self.t_bottom += dy
         self.last_seen = time.time()
 
     def glide(self):
-        # Linear Interpolation (Lerp) untuk pergerakan halus
-        self.top += (self.t_top - self.top) * SMOOTH_SPEED
-        self.right += (self.t_right - self.right) * SMOOTH_SPEED
-        self.bottom += (self.t_bottom - self.bottom) * SMOOTH_SPEED
-        self.left += (self.t_left - self.left) * SMOOTH_SPEED
+        # Adaptive lerp: tetap halus untuk gerakan kecil, cepat mengejar gerakan besar.
+        gap = max(
+            abs(self.t_top - self.top),
+            abs(self.t_right - self.right),
+            abs(self.t_bottom - self.bottom),
+            abs(self.t_left - self.left),
+        )
+        speed = min(0.72, max(SMOOTH_SPEED, gap / 180.0))
+        self.top += (self.t_top - self.top) * speed
+        self.right += (self.t_right - self.right) * speed
+        self.bottom += (self.t_bottom - self.bottom) * speed
+        self.left += (self.t_left - self.left) * speed
 
 # ──────────────────────────────────────────────
 # DATABASE MANAGER (Secure JSON Storage)
@@ -141,7 +172,12 @@ def ai_worker_process(task_queue: mp.Queue, result_queue: mp.Queue, db_path: str
             continue
 
         if command == "PROCESS":
-            mode, rgb_small = payload
+            if len(payload) == 3:
+                seq, mode, rgb_small = payload
+            else:
+                seq = 0
+                mode, rgb_small = payload
+
             locations = face_recognition.face_locations(rgb_small, model="hog")
             
             if mode == "recognize":
@@ -157,12 +193,15 @@ def ai_worker_process(task_queue: mp.Queue, result_queue: mp.Queue, db_path: str
                                 name = db.known_names[best_idx]
                                 confidence = round((1 - distances[best_idx]) * 100, 1)
                         results.append((top * scale, right * scale, bottom * scale, left * scale, name, confidence))
-                result_queue.put(("RECOGNIZE_RESULT", results))
+                result_queue.put(("RECOGNIZE_RESULT", seq, mode, results))
 
             elif mode == "register":
                 encodings = face_recognition.face_encodings(rgb_small, locations) if locations else []
                 full_locs = [(t * scale, r * scale, b * scale, l * scale) for t, r, b, l in locations]
-                result_queue.put(("REGISTER_RESULT", encodings, full_locs))
+                result_queue.put(("REGISTER_RESULT", seq, mode, encodings, full_locs))
+
+            else:
+                result_queue.put(("PROCESS_SKIPPED", seq, mode))
 
 # ──────────────────────────────────────────────
 # MAIN GUI APP (Main Thread)
@@ -183,6 +222,14 @@ class FaceRecognitionApp(tk.Tk):
         self.mode = "recognize" 
         self.current_frame = None
         self.animated_boxes: list[SmoothBox] = []
+        self.box_lock = threading.Lock()
+        self.ai_lock = threading.Lock()
+        self._ai_inflight = False
+        self._ai_inflight_seq = 0
+        self._ai_seq = 0
+        self._latest_result_seq = 0
+        self._last_ai_submit = 0.0
+        self._prev_gray = None
         
         self.reg_name = ""
         self.reg_encodings = []
@@ -233,6 +280,7 @@ class FaceRecognitionApp(tk.Tk):
         
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
         
         self.after(0, lambda: self.status_var.set(f"✅ Sistem Stabil | Database: {self.db.count()} identitas"))
@@ -242,17 +290,161 @@ class FaceRecognitionApp(tk.Tk):
             if not ret: continue
             
             frame = cv2.flip(frame, 1)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+            with self.box_lock:
+                if self._prev_gray is not None and self.animated_boxes:
+                    self._update_motion_tracking(self._prev_gray, gray)
+                self._prev_gray = gray
+
             self.current_frame = frame 
-            
-            try:
-                small = cv2.resize(frame, (0, 0), fx=FRAME_SCALE, fy=FRAME_SCALE)
-                rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-                self.task_queue.put_nowait(("PROCESS", (self.mode, rgb_small)))
-            except queue.Full: 
-                pass # Buang frame jika AI Process masih sibuk (mencegah lag menumpuk)
+            self._submit_frame_for_ai(frame)
                 
         cap.release()
         logger.info("Kamera dinonaktifkan.")
+
+    def _submit_frame_for_ai(self, frame):
+        mode = self.mode
+        if mode not in ("recognize", "register"):
+            return
+
+        now = time.time()
+        with self.ai_lock:
+            if self._ai_inflight or (now - self._last_ai_submit) < AI_MIN_INTERVAL:
+                return
+            self._ai_seq += 1
+            seq = self._ai_seq
+            self._ai_inflight = True
+            self._ai_inflight_seq = seq
+            self._last_ai_submit = now
+
+        try:
+            small = cv2.resize(frame, (0, 0), fx=FRAME_SCALE, fy=FRAME_SCALE)
+            rgb_small = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+            self.task_queue.put_nowait(("PROCESS", (seq, mode, rgb_small)))
+        except queue.Full:
+            with self.ai_lock:
+                if seq == self._ai_inflight_seq:
+                    self._ai_inflight = False
+        except Exception as e:
+            logger.error(f"Gagal mengirim frame ke AI Worker: {e}")
+            with self.ai_lock:
+                if seq == self._ai_inflight_seq:
+                    self._ai_inflight = False
+
+    def _accept_ai_result(self, seq):
+        with self.ai_lock:
+            if seq < self._latest_result_seq:
+                return False
+            self._latest_result_seq = seq
+            if seq >= self._ai_inflight_seq:
+                self._ai_inflight = False
+            return True
+
+    def _seed_flow_points(self, gray, box: SmoothBox):
+        height, width = gray.shape[:2]
+        left = max(0, min(width - 1, int(box.t_left)))
+        right = max(0, min(width, int(box.t_right)))
+        top = max(0, min(height - 1, int(box.t_top)))
+        bottom = max(0, min(height, int(box.t_bottom)))
+
+        if (right - left) < 20 or (bottom - top) < 20:
+            box.flow_points = None
+            return
+
+        roi = gray[top:bottom, left:right]
+        points = cv2.goodFeaturesToTrack(
+            roi,
+            maxCorners=FLOW_MAX_POINTS,
+            qualityLevel=0.01,
+            minDistance=5,
+            blockSize=7,
+        )
+
+        if points is None:
+            box.flow_points = None
+            return
+
+        points[:, 0, 0] += left
+        points[:, 0, 1] += top
+        box.flow_points = points.astype(np.float32)
+        box.last_flow_seed = time.time()
+
+    def _update_motion_tracking(self, prev_gray, gray):
+        now = time.time()
+        height, width = gray.shape[:2]
+
+        for box in self.animated_boxes:
+            if (now - box.last_ai_seen) > AI_CONFIRM_GRACE:
+                continue
+
+            needs_seed = (
+                box.flow_points is None
+                or len(box.flow_points) < FLOW_MIN_POINTS
+                or (now - box.last_flow_seed) > FLOW_RESEED_INTERVAL
+            )
+            if needs_seed:
+                self._seed_flow_points(prev_gray, box)
+
+            if box.flow_points is None or len(box.flow_points) < FLOW_MIN_POINTS:
+                continue
+
+            try:
+                next_points, status, _ = cv2.calcOpticalFlowPyrLK(
+                    prev_gray,
+                    gray,
+                    box.flow_points,
+                    None,
+                    winSize=(21, 21),
+                    maxLevel=3,
+                    criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03),
+                )
+            except cv2.error:
+                box.flow_points = None
+                continue
+
+            if next_points is None or status is None:
+                box.flow_points = None
+                continue
+
+            valid = status.reshape(-1) == 1
+            old_points = box.flow_points[valid].reshape(-1, 2)
+            new_points = next_points[valid].reshape(-1, 2)
+
+            if len(new_points) < FLOW_MIN_POINTS:
+                box.flow_points = None
+                continue
+
+            in_frame = (
+                (new_points[:, 0] >= 0)
+                & (new_points[:, 0] < width)
+                & (new_points[:, 1] >= 0)
+                & (new_points[:, 1] < height)
+            )
+            old_points = old_points[in_frame]
+            new_points = new_points[in_frame]
+
+            if len(new_points) < FLOW_MIN_POINTS:
+                box.flow_points = None
+                continue
+
+            deltas = new_points - old_points
+            median = np.median(deltas, axis=0)
+            spread = np.linalg.norm(deltas - median, axis=1)
+            if len(spread) >= FLOW_MIN_POINTS:
+                keep = spread <= max(6.0, np.percentile(spread, 75) * 2.0)
+                if np.count_nonzero(keep) >= FLOW_MIN_POINTS:
+                    deltas = deltas[keep]
+                    new_points = new_points[keep]
+                    median = np.median(deltas, axis=0)
+
+            dx, dy = float(median[0]), float(median[1])
+            if abs(dx) > FLOW_MAX_STEP or abs(dy) > FLOW_MAX_STEP:
+                box.flow_points = None
+                continue
+
+            box.apply_motion(dx, dy)
+            box.flow_points = new_points.reshape(-1, 1, 2).astype(np.float32)
 
     # ── RESULT RECEIVER THREAD ────────────────────
     def _result_receiver(self):
@@ -260,39 +452,62 @@ class FaceRecognitionApp(tk.Tk):
             try:
                 result = self.result_queue.get(timeout=0.5)
                 msg_type = result[0]
-                
+
+                if msg_type == "PROCESS_SKIPPED":
+                    self._accept_ai_result(result[1])
+                    continue
+
                 if msg_type in ("RECOGNIZE_RESULT", "REGISTER_RESULT"):
-                    ai_boxes = result[1] if msg_type == "RECOGNIZE_RESULT" else result[2]
-                    
-                    for item in ai_boxes:
-                        if msg_type == "RECOGNIZE_RESULT":
-                            t, r, b, l, name, conf = item
-                        else:
-                            t, r, b, l = item
-                            name, conf = self.reg_name, 0.0
+                    seq = result[1]
+                    result_mode = result[2]
+                    if not self._accept_ai_result(seq):
+                        continue
 
-                        cx, cy = (l + r) / 2, (t + b) / 2
-                        best_box = None
-                        best_dist = float('inf')
-                        
-                        for box in self.animated_boxes:
-                            bx, by = (box.left + box.right) / 2, (box.top + box.bottom) / 2
-                            dist = math.hypot(cx - bx, cy - by)
-                            if dist < TRACK_RADIUS and dist < best_dist:
-                                best_dist = dist
-                                best_box = box
-                        
-                        if best_box:
-                            best_box.update_target(t, r, b, l, name, conf)
-                        else:
-                            self.animated_boxes.append(SmoothBox(t, r, b, l, name, conf))
+                    # Abaikan hasil lama dari mode sebelum user pindah ke register/cancel.
+                    if result_mode != self.mode:
+                        continue
 
-                        if msg_type == "RECOGNIZE_RESULT" and name != UNKNOWN_LABEL:
-                            self.after(0, self._write_log, name, conf)
+                    ai_boxes = result[3] if msg_type == "RECOGNIZE_RESULT" else result[4]
+                    log_events = []
+
+                    with self.box_lock:
+                        matched_indices = set()
+
+                        for item in ai_boxes:
+                            if msg_type == "RECOGNIZE_RESULT":
+                                t, r, b, l, name, conf = item
+                            else:
+                                t, r, b, l = item
+                                name, conf = self.reg_name, 0.0
+
+                            cx, cy = (l + r) / 2, (t + b) / 2
+                            best_idx = None
+                            best_dist = float('inf')
+
+                            for idx, box in enumerate(self.animated_boxes):
+                                if idx in matched_indices:
+                                    continue
+                                bx, by = (box.left + box.right) / 2, (box.top + box.bottom) / 2
+                                dist = math.hypot(cx - bx, cy - by)
+                                if dist < TRACK_RADIUS and dist < best_dist:
+                                    best_dist = dist
+                                    best_idx = idx
+
+                            if best_idx is not None:
+                                self.animated_boxes[best_idx].update_target(t, r, b, l, name, conf)
+                                matched_indices.add(best_idx)
+                            else:
+                                self.animated_boxes.append(SmoothBox(t, r, b, l, name, conf))
+
+                            if msg_type == "RECOGNIZE_RESULT" and name != UNKNOWN_LABEL:
+                                log_events.append((name, conf))
+
+                    for name, conf in log_events:
+                        self.after(0, self._write_log, name, conf)
 
                     # PERBAIKAN: Hanya catat frame registrasi JIKA state adalah "register" murni
                     if msg_type == "REGISTER_RESULT" and self.mode == "register":
-                        encodings = result[1]
+                        encodings = result[3]
                         now = time.time()
                         if encodings and (now - self._last_sample) >= 0.6:
                             self.reg_encodings.append(encodings[0])
@@ -309,17 +524,26 @@ class FaceRecognitionApp(tk.Tk):
         if frame is not None:
             display_frame = frame.copy()
             current_time = time.time()
-            
-            # Hapus kotak yang melewati masa grace period (wajah keluar frame)
-            self.animated_boxes = [b for b in self.animated_boxes if (current_time - b.last_seen) < GRACE_PERIOD]
 
-            for box in self.animated_boxes:
-                box.glide() 
-                
-                # Konversi Float ke Int KHUSUS SAAT MENGGAMBAR, jangan di logic kalkulasi
-                t, r, b, l = int(box.top), int(box.right), int(box.bottom), int(box.left)
-                color = (0, 220, 100) if box.name != UNKNOWN_LABEL else (0, 80, 220)
-                label = f"{box.name} ({box.conf}%)" if self.mode == "recognize" and box.name != UNKNOWN_LABEL else (
+            boxes_to_draw = []
+            with self.box_lock:
+                # Kotak tetap hidup jika optical flow masih valid, tetapi wajib dikonfirmasi AI berkala.
+                self.animated_boxes = [
+                    b for b in self.animated_boxes
+                    if (current_time - b.last_seen) < GRACE_PERIOD
+                    and (current_time - b.last_ai_seen) < AI_CONFIRM_GRACE
+                ]
+
+                for box in self.animated_boxes:
+                    box.glide() 
+
+                    # Konversi Float ke Int KHUSUS SAAT MENGGAMBAR, jangan di logic kalkulasi
+                    t, r, b, l = int(box.top), int(box.right), int(box.bottom), int(box.left)
+                    boxes_to_draw.append((t, r, b, l, box.name, box.conf))
+
+            for t, r, b, l, name, conf in boxes_to_draw:
+                color = (0, 220, 100) if name != UNKNOWN_LABEL else (0, 80, 220)
+                label = f"{name} ({conf}%)" if self.mode == "recognize" and name != UNKNOWN_LABEL else (
                         f"Registrasi: {self.reg_name}" if self.mode in ("register", "saving") else UNKNOWN_LABEL)
                 
                 cv2.rectangle(display_frame, (l, t), (r, b), color, 2)
@@ -340,7 +564,9 @@ class FaceRecognitionApp(tk.Tk):
         if not name or not name.strip(): return
         
         self.reg_name, self.reg_encodings, self._last_sample = name.strip(), [], 0.0
-        self.animated_boxes.clear()
+        with self.box_lock:
+            self.animated_boxes.clear()
+            self._prev_gray = None
         self.mode = "register"
         logger.info(f"==> MULAI REGISTRASI: {self.reg_name}")
         
@@ -374,7 +600,9 @@ class FaceRecognitionApp(tk.Tk):
     def _cancel_register(self):
         if self.mode == "register": logger.warning("Proses registrasi dibatalkan.")
         self.mode = "recognize"
-        self.animated_boxes.clear()
+        with self.box_lock:
+            self.animated_boxes.clear()
+            self._prev_gray = None
         self.progress_frame.pack_forget()
         self.status_var.set(f"✅ Sistem Stabil | Database: {self.db.count()} identitas")
 
@@ -435,7 +663,10 @@ class FaceRecognitionApp(tk.Tk):
     def _on_close(self):
         logger.info("Menutup sistem secara aman. Membersihkan resources...")
         self.running = False
-        self.task_queue.put(None) 
+        try:
+            self.task_queue.put_nowait(None)
+        except queue.Full:
+            pass
         self.destroy()
 
 # ──────────────────────────────────────────────
@@ -447,7 +678,7 @@ if __name__ == "__main__":
     logger.info("=== ENTERPRISE FACE RECOGNITION BOOTING UP ===")
     
     # IPC (Inter-Process Communication) Queues
-    task_queue = mp.Queue(maxsize=2) 
+    task_queue = mp.Queue(maxsize=1) 
     result_queue = mp.Queue()
     
     # Memulai OS Process terpisah untuk memecah beban CPU
