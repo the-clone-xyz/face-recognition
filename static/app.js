@@ -19,6 +19,8 @@ const stageOriginalNote = document.getElementById("stageOriginalNote");
 const stageGray = document.getElementById("stageGray");
 const stageResize = document.getElementById("stageResize");
 const stageResult = document.getElementById("stageResult");
+const rgbHistogram = document.getElementById("rgbHistogram");
+const histogramStatus = document.getElementById("histogramStatus");
 const mathStatus = document.getElementById("mathStatus");
 const metricResolution = document.getElementById("metricResolution");
 const metricPixels = document.getElementById("metricPixels");
@@ -116,6 +118,90 @@ function getCenterSample(canvasCtx, width, height) {
   const data = canvasCtx.getImageData(x, y, 1, 1).data;
   const gray = Math.round(0.299 * data[0] + 0.587 * data[1] + 0.114 * data[2]);
   return { r: data[0], g: data[1], b: data[2], gray };
+}
+
+function buildRgbHistogram(imageData) {
+  const red = new Array(256).fill(0);
+  const green = new Array(256).fill(0);
+  const blue = new Array(256).fill(0);
+
+  for (let i = 0; i < imageData.data.length; i += 4) {
+    red[imageData.data[i]] += 1;
+    green[imageData.data[i + 1]] += 1;
+    blue[imageData.data[i + 2]] += 1;
+  }
+
+  return { red, green, blue };
+}
+
+function drawHistogramChannel(canvasCtx, values, width, height, color, maxValue) {
+  canvasCtx.beginPath();
+  values.forEach((value, index) => {
+    const x = (index / 255) * width;
+    const y = height - (value / maxValue) * height;
+    if (index === 0) {
+      canvasCtx.moveTo(x, y);
+      return;
+    }
+    canvasCtx.lineTo(x, y);
+  });
+  canvasCtx.strokeStyle = color;
+  canvasCtx.lineWidth = 2;
+  canvasCtx.stroke();
+}
+
+function drawRgbHistogram(imageData, width, height) {
+  if (!rgbHistogram) return;
+
+  const histogramCtx = rgbHistogram.getContext("2d");
+  const histogram = buildRgbHistogram(imageData);
+  const maxValue = Math.max(1, ...histogram.red, ...histogram.green, ...histogram.blue);
+  const pixelRatio = window.devicePixelRatio || 1;
+  const displayWidth = rgbHistogram.clientWidth || rgbHistogram.width;
+  const displayHeight = rgbHistogram.clientHeight || rgbHistogram.height;
+
+  if (rgbHistogram.width !== Math.round(displayWidth * pixelRatio)) {
+    rgbHistogram.width = Math.round(displayWidth * pixelRatio);
+  }
+  if (rgbHistogram.height !== Math.round(displayHeight * pixelRatio)) {
+    rgbHistogram.height = Math.round(displayHeight * pixelRatio);
+  }
+
+  histogramCtx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  histogramCtx.clearRect(0, 0, displayWidth, displayHeight);
+  histogramCtx.fillStyle = "#ffffff";
+  histogramCtx.fillRect(0, 0, displayWidth, displayHeight);
+
+  const padding = { top: 14, right: 14, bottom: 26, left: 34 };
+  const chartWidth = displayWidth - padding.left - padding.right;
+  const chartHeight = displayHeight - padding.top - padding.bottom;
+
+  histogramCtx.save();
+  histogramCtx.translate(padding.left, padding.top);
+  histogramCtx.strokeStyle = "#d7dde4";
+  histogramCtx.lineWidth = 1;
+  histogramCtx.beginPath();
+  for (let i = 0; i <= 4; i += 1) {
+    const y = (chartHeight / 4) * i;
+    histogramCtx.moveTo(0, y);
+    histogramCtx.lineTo(chartWidth, y);
+  }
+  histogramCtx.stroke();
+
+  histogramCtx.globalAlpha = 0.9;
+  drawHistogramChannel(histogramCtx, histogram.red, chartWidth, chartHeight, "#d73535", maxValue);
+  drawHistogramChannel(histogramCtx, histogram.green, chartWidth, chartHeight, "#159447", maxValue);
+  drawHistogramChannel(histogramCtx, histogram.blue, chartWidth, chartHeight, "#2468d8", maxValue);
+  histogramCtx.restore();
+
+  histogramCtx.fillStyle = "#627080";
+  histogramCtx.font = "12px Arial";
+  histogramCtx.fillText("0", padding.left, displayHeight - 8);
+  histogramCtx.fillText("128", padding.left + chartWidth / 2 - 10, displayHeight - 8);
+  histogramCtx.fillText("255", padding.left + chartWidth - 20, displayHeight - 8);
+  histogramCtx.fillText("Piksel", 6, 18);
+
+  setText(histogramStatus, `${width}x${height} | 256 bin`);
 }
 
 function updateMathPanel(sample, stageWidth, stageHeight, halfWidth, halfHeight) {
@@ -263,6 +349,8 @@ function drawPipelineStages() {
   const originalCtx = stageOriginal.getContext("2d");
   drawVideoFrame(originalCtx, stageWidth, stageHeight);
   const centerSample = getCenterSample(originalCtx, stageWidth, stageHeight);
+  const originalFrame = originalCtx.getImageData(0, 0, stageWidth, stageHeight);
+  drawRgbHistogram(originalFrame, stageWidth, stageHeight);
 
   const grayCtx = stageGray.getContext("2d");
   drawVideoFrame(grayCtx, stageWidth, stageHeight);

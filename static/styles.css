@@ -135,6 +135,7 @@ input {
 
 .camera-panel,
 .pipeline-panel,
+.concept-panel,
 .section {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -213,6 +214,10 @@ canvas {
   padding: 14px;
 }
 
+.concept-panel {
+  padding: 14px;
+}
+
 .pipeline-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -249,6 +254,114 @@ canvas {
 .stage-label small,
 .small-muted {
   color: var(--muted);
+}
+
+.concept-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(300px, 1.2fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.concept-text {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.concept-text p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.concept-points {
+  display: grid;
+  gap: 8px;
+}
+
+.concept-points div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f7f9fb;
+  padding: 9px 10px;
+}
+
+.concept-points strong {
+  font-size: 13px;
+}
+
+.concept-points span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.histogram-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.histogram-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.histogram-head small {
+  color: var(--muted);
+}
+
+.histogram-card canvas {
+  position: static;
+  display: block;
+  width: 100%;
+  height: 220px;
+  background: #fff;
+}
+
+.histogram-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 9px 12px 12px;
+}
+
+.histogram-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.histogram-legend span::before {
+  width: 20px;
+  height: 3px;
+  border-radius: 999px;
+  content: "";
+}
+
+.legend-red::before {
+  background: #d73535;
+}
+
+.legend-green::before {
+  background: #159447;
+}
+
+.legend-blue::before {
+  background: #2468d8;
 }
 
 .metric-section {
@@ -502,6 +615,10 @@ canvas {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .concept-grid {
+    grid-template-columns: 1fr;
+  }
+
   .toolbar,
   .form-row {
     flex-direction: column;
@@ -515,7 +632,13 @@ canvas {
   }
 
   .metric-grid,
+  .concept-points div,
   .formula-row {
     grid-template-columns: 1fr;
+  }
+
+  .histogram-head {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

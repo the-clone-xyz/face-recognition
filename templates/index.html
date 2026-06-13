@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Face Recognition</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=pcd3">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}?v=pcd4">
   </head>
   <body>
     <main class="app-shell">
@@ -68,6 +68,38 @@
                 <div class="stage-label">
                   <strong>4. Deteksi</strong>
                   <small>Kotak wajah dan label</small>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="concept-panel">
+            <div class="section-head">
+              <h2>Konsep Pengolahan Citra Digital</h2>
+              <span id="histogramStatus" class="small-muted">Menunggu frame</span>
+            </div>
+            <div class="concept-grid">
+              <div class="concept-text">
+                <p>
+                  Citra RGB menyimpan setiap piksel sebagai kombinasi intensitas
+                  Red, Green, dan Blue pada rentang 0 sampai 255.
+                </p>
+                <div class="concept-points">
+                  <div><strong>Red</strong><span>Kanal warna merah untuk detail hangat.</span></div>
+                  <div><strong>Green</strong><span>Kanal paling dominan pada luminance.</span></div>
+                  <div><strong>Blue</strong><span>Kanal warna biru untuk detail dingin.</span></div>
+                </div>
+              </div>
+              <div class="histogram-card">
+                <div class="histogram-head">
+                  <strong>Histogram Citra RGB</strong>
+                  <small>Distribusi intensitas 0-255</small>
+                </div>
+                <canvas id="rgbHistogram" width="512" height="220"></canvas>
+                <div class="histogram-legend" aria-label="Legenda histogram RGB">
+                  <span class="legend-red">Red</span>
+                  <span class="legend-green">Green</span>
+                  <span class="legend-blue">Blue</span>
                 </div>
               </div>
             </div>
@@ -207,6 +239,6 @@
       </section>
     </main>
 
-    <script src="{{ url_for('static', filename='app.js') }}?v=pcd3"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=pcd4"></script>
   </body>
 </html>
