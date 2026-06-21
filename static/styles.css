@@ -1,4 +1,5 @@
 :root {
+  /* Variabel warna utama agar tema tampilan mudah dijelaskan dan diubah. */
   color-scheme: light;
   --ink: #17202a;
   --muted: #627080;
@@ -59,11 +60,13 @@ input {
   padding: 0 12px;
 }
 
+/* Shell aplikasi: membungkus seluruh halaman kamera dan database. */
 .app-shell {
   min-height: 100vh;
   padding: 18px;
 }
 
+/* Header: menampilkan judul, status database, dan tombol navigasi. */
 .topbar {
   display: flex;
   align-items: center;
@@ -118,6 +121,7 @@ input {
   background: #e8f4f2;
 }
 
+/* Layout utama: kolom kiri untuk kamera/pipeline, kolom kanan untuk kontrol dan hasil. */
 .workspace {
   display: grid;
   grid-template-columns: minmax(560px, 1fr) 380px;
@@ -146,6 +150,7 @@ input {
   overflow: hidden;
 }
 
+/* Area video memakai aspect-ratio tetap agar overlay canvas sejajar dengan kamera. */
 .video-wrap {
   position: relative;
   width: 100%;
@@ -166,6 +171,7 @@ video {
   transform: none;
 }
 
+/* Mirror hanya memengaruhi tampilan video; frame yang dikirim ke backend tetap dikontrol JS. */
 video.is-mirrored {
   transform: scaleX(-1);
 }
@@ -218,6 +224,7 @@ canvas {
   padding: 14px;
 }
 
+/* Pipeline PCD: empat kartu untuk RGB, grayscale, resize, dan hasil deteksi. */
 .pipeline-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -256,6 +263,7 @@ canvas {
   color: var(--muted);
 }
 
+/* Panel konsep RGB dan histogram untuk menjelaskan distribusi intensitas piksel. */
 .concept-grid {
   display: grid;
   grid-template-columns: minmax(220px, 0.8fr) minmax(300px, 1.2fr);
@@ -364,6 +372,7 @@ canvas {
   background: #2468d8;
 }
 
+/* Panel metrik menampilkan angka runtime dan rumus PCD secara ringkas. */
 .metric-section {
   display: grid;
   gap: 12px;
@@ -474,6 +483,7 @@ canvas {
   line-height: 1;
 }
 
+/* Komponen umum untuk form registrasi, daftar wajah, dan hasil recognition. */
 .section {
   padding: 14px;
 }
@@ -560,6 +570,7 @@ canvas {
   color: var(--danger);
 }
 
+/* Halaman /database: tabel ringkas untuk mengecek data encoding yang tersimpan. */
 .db-page {
   max-width: 1180px;
   margin: 0 auto;
@@ -592,6 +603,7 @@ canvas {
   overflow-wrap: anywhere;
 }
 
+/* Responsive tablet: kolom kanan turun ke bawah agar demo tetap nyaman di layar kecil. */
 @media (max-width: 860px) {
   .app-shell {
     padding: 12px;
@@ -626,6 +638,7 @@ canvas {
   }
 }
 
+/* Responsive mobile: semua kartu dibuat satu kolom agar teks dan canvas tidak bertumpuk. */
 @media (max-width: 520px) {
   .pipeline-grid {
     grid-template-columns: 1fr;

@@ -7,7 +7,6 @@ import time
 from collections import Counter
 
 import cv2
-import face_recognition
 import numpy as np
 from flask import Flask, jsonify, render_template, request
 from PIL import Image
@@ -16,12 +15,13 @@ from face_db import FaceDatabase, get_db_config
 from pcd_utils import (
     calculate_fps,
     convert_to_grayscale_rgb,
+    get_face_recognition,
     normalize_pixels,
     recognize_face,
 )
 
 
-TOLERANCE = 0.6
+TOLERANCE = 0.55
 FRAME_SCALE = 0.35
 UNKNOWN_LABEL = "Tidak Dikenal"
 
@@ -29,6 +29,8 @@ app = Flask(__name__)
 
 
 def decode_image(data_url: str) -> np.ndarray:
+    # Browser mengirim frame kamera sebagai data URL base64.
+    # Fungsi ini mengubahnya kembali menjadi array RGB untuk OpenCV/face_recognition.
     if "," in data_url:
         data_url = data_url.split(",", 1)[1]
     raw = base64.b64decode(data_url)
@@ -37,6 +39,8 @@ def decode_image(data_url: str) -> np.ndarray:
 
 
 def get_database() -> FaceDatabase:
+    # FaceDatabase dibuat per request agar data terbaru dari MySQL selalu terbaca,
+    # misalnya setelah registrasi atau hapus wajah.
     return FaceDatabase()
 
 
@@ -46,10 +50,14 @@ def detect_faces(rgb_image: np.ndarray):
     # sedangkan library face_recognition tetap membutuhkan citra RGB.
     gray = convert_to_grayscale_rgb(rgb_image)
     normalized = normalize_pixels(gray)
+    # Frame diperkecil sebelum deteksi agar proses lebih ringan saat kamera realtime.
     small = cv2.resize(rgb_image, (0, 0), fx=FRAME_SCALE, fy=FRAME_SCALE)
+    face_recognition = get_face_recognition()
     locations = face_recognition.face_locations(small, model="hog")
     encodings = face_recognition.face_encodings(small, locations)
     scale = 1.0 / FRAME_SCALE
+    # Koordinat hasil deteksi dari frame kecil dikembalikan ke ukuran asli
+    # supaya kotak wajah di canvas frontend tepat posisinya.
     scaled_locations = [
         {
             "top": round(top * scale),
@@ -68,11 +76,13 @@ def detect_faces(rgb_image: np.ndarray):
 
 @app.get("/")
 def index():
+    # Halaman utama: kamera, registrasi wajah, dan hasil recognition realtime.
     return render_template("index.html")
 
 
 @app.get("/database")
 def database_page():
+    # Halaman presentasi data: menampilkan isi tabel faces dari MySQL/phpMyAdmin.
     config = get_db_config()
     try:
         db = get_database()
@@ -86,6 +96,7 @@ def database_page():
 
 @app.get("/api/status")
 def status():
+    # Dipanggil frontend untuk menunjukkan apakah database aktif dan berapa encoding tersimpan.
     config = get_db_config()
     try:
         db = get_database()
@@ -103,6 +114,7 @@ def status():
 
 @app.get("/api/faces")
 def list_faces():
+    # Mengirim daftar nama unik beserta jumlah sample encoding per nama ke panel Database.
     try:
         db = get_database()
         counts = Counter(db.known_names)
@@ -121,6 +133,7 @@ def list_faces():
 
 @app.delete("/api/faces/<name>")
 def delete_face(name: str):
+    # Tombol Hapus di frontend memanggil route ini untuk menghapus semua data wajah milik nama.
     try:
         deleted = get_database().remove_face(name)
         return jsonify({"ok": True, "deleted": deleted})
@@ -130,6 +143,8 @@ def delete_face(name: str):
 
 @app.post("/api/recognize")
 def recognize():
+    # Alur realtime:
+    # frame kamera -> deteksi wajah -> encoding -> cocokkan ke database -> kirim box dan metrik.
     started_at = time.time()
     payload = request.get_json(force=True)
     rgb = decode_image(payload["image"])
@@ -174,6 +189,8 @@ def recognize():
 
 @app.post("/api/register")
 def register():
+    # Registrasi mengambil beberapa frame, lalu menyimpan rata-rata encoding
+    # agar data wajah lebih stabil dibanding satu frame saja.
     payload = request.get_json(force=True)
     name = payload.get("name", "").strip()
     images = payload.get("images", [])
@@ -194,6 +211,7 @@ def register():
     if not collected:
         return jsonify({"ok": False, "error": "Wajah tidak terdeteksi."}), 400
 
+    # Rata-rata vektor encoding menjadi representasi final wajah yang disimpan ke MySQL.
     avg_encoding = np.mean(collected, axis=0)
     db = get_database()
     db.add_face(name, avg_encoding)

@@ -25,6 +25,8 @@ DEFAULT_DB_CONFIG = {
 
 
 def get_db_config() -> dict[str, Any]:
+    # Konfigurasi default dipakai untuk XAMPP lokal.
+    # Environment variable tetap didukung agar mudah dipresentasikan di mesin lain.
     return {
         "host": os.getenv("DB_HOST", DEFAULT_DB_CONFIG["host"]),
         "port": int(os.getenv("DB_PORT", str(DEFAULT_DB_CONFIG["port"]))),
@@ -35,6 +37,12 @@ def get_db_config() -> dict[str, Any]:
 
 
 class FaceDatabase:
+    """Lapisan akses data untuk tabel faces.
+
+    Setiap object FaceDatabase akan memastikan tabel tersedia, lalu memuat
+    seluruh encoding dari MySQL ke memory agar pencocokan wajah bisa cepat.
+    """
+
     def __init__(self, _legacy_path: str | None = None):
         self.config = get_db_config()
         self.known_encodings: list[np.ndarray] = []
@@ -43,9 +51,12 @@ class FaceDatabase:
         self.load()
 
     def _connect(self):
+        # Semua query database lewat fungsi ini supaya konfigurasi hanya ada di satu tempat.
         return mysql.connector.connect(**self.config)
 
     def _ensure_schema(self):
+        # Tabel dibuat otomatis saat aplikasi start, jadi demo tetap jalan
+        # walaupun database baru saja dibuat dari phpMyAdmin/XAMPP.
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -62,6 +73,8 @@ class FaceDatabase:
             conn.commit()
 
     def load(self):
+        # Encoding disimpan sebagai JSON di MySQL, lalu dikonversi kembali
+        # menjadi numpy array untuk perhitungan Euclidean Distance.
         with self._connect() as conn:
             with conn.cursor(dictionary=True) as cur:
                 cur.execute("SELECT name, encoding FROM faces ORDER BY id ASC")
@@ -80,6 +93,7 @@ class FaceDatabase:
         raise NotImplementedError("Use add_face/remove_face for MySQL-backed storage.")
 
     def add_face(self, name: str, encoding: np.ndarray):
+        # Saat registrasi, satu encoding rata-rata disimpan sebagai satu record wajah.
         encoding_json = json.dumps(encoding.tolist())
         with self._connect() as conn:
             with conn.cursor() as cur:
@@ -91,6 +105,7 @@ class FaceDatabase:
         self.load()
 
     def remove_face(self, name: str) -> int:
+        # Penghapusan berdasarkan nama menghapus semua sample milik nama tersebut.
         with self._connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM faces WHERE name = %s", (name,))
@@ -109,6 +124,8 @@ class FaceDatabase:
         return {"encodings": self.known_encodings, "names": self.known_names}
 
     def rows(self) -> list[dict[str, Any]]:
+        # Data ringkas untuk halaman /database; encoding penuh tidak ditampilkan
+        # karena vektornya panjang, cukup dimensi dan nilai awal sebagai bukti data.
         with self._connect() as conn:
             with conn.cursor(dictionary=True) as cur:
                 cur.execute(

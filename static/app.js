@@ -37,6 +37,7 @@ const formulaDistance = document.getElementById("formulaDistance");
 const formulaCosine = document.getElementById("formulaCosine");
 const formulaDecision = document.getElementById("formulaDecision");
 
+// State utama aplikasi: kamera, loop recognition, data wajah terakhir, dan overlay tracking.
 let cameraReady = false;
 let recognizing = false;
 let recognizeTimer = null;
@@ -51,10 +52,20 @@ let lastRecognitionMs = 0;
 let lastAiFps = 0;
 let lastProcessTime = 0;
 let mirrorCamera = mirrorCameraInput ? mirrorCameraInput.checked : true;
-const TRACKING_SMOOTHING = 0.72;
-const RECOGNITION_DELAY_MS = 280;
+let previousOverlayAt = 0;
+const UNKNOWN_FACE_NAME = "Tidak Dikenal";
+const TRACKING_EASE = 0.22;
+const TRACKING_TARGET_BLEND = 0.6;
+const TRACKING_DEADZONE_PX = 4;
+const TRACKING_KEEP_MS = 6000;
+const TRACKING_FADE_AFTER_MS = 3800;
+const TRACKING_MAX_PREDICT_MS = 1100;
+const TRACKING_MAX_VELOCITY = 6;
+const TRACKING_LABEL_STICKY_MS = 1800;
+const RECOGNITION_DELAY_MS = 80;
 const PIPELINE_DELAY_MS = 500;
 
+// Helper DOM kecil agar update teks/HTML tidak perlu berulang mengecek null.
 function setText(element, value) {
   if (element) {
     element.textContent = value;
@@ -74,6 +85,7 @@ function setProgress(value, total) {
 }
 
 function captureFrame(quality = 0.82) {
+  // Frame kamera digambar ke canvas sementara, lalu dikirim ke Flask sebagai JPEG base64.
   const canvas = document.createElement("canvas");
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
@@ -83,6 +95,7 @@ function captureFrame(quality = 0.82) {
 }
 
 function drawVideoFrame(canvasCtx, width, height) {
+  // Fungsi pusat untuk menggambar video; mode mirror diterapkan konsisten di preview dan capture.
   canvasCtx.save();
   if (mirrorCamera) {
     canvasCtx.translate(width, 0);
@@ -93,10 +106,14 @@ function drawVideoFrame(canvasCtx, width, height) {
 }
 
 function updateMirrorMode() {
+  // Checkbox Mirror hanya mengubah arah tampilan, bukan struktur data database.
   if (!mirrorCameraInput || !video) return;
   mirrorCamera = mirrorCameraInput.checked;
   video.classList.toggle("is-mirrored", mirrorCamera);
-  setText(stageOriginalNote, mirrorCamera ? "Frame masuk mirror" : "Frame masuk tanpa mirror");
+  setText(
+    stageOriginalNote,
+    mirrorCamera ? "Frame masuk mirror" : "Frame masuk tanpa mirror",
+  );
   if (cameraReady) {
     drawFaces(displayFaces);
     drawPipelineStages();
@@ -121,6 +138,7 @@ function getCenterSample(canvasCtx, width, height) {
 }
 
 function buildRgbHistogram(imageData) {
+  // Histogram menghitung jumlah piksel untuk setiap intensitas 0-255 pada kanal R, G, dan B.
   const red = new Array(256).fill(0);
   const green = new Array(256).fill(0);
   const blue = new Array(256).fill(0);
@@ -134,7 +152,14 @@ function buildRgbHistogram(imageData) {
   return { red, green, blue };
 }
 
-function drawHistogramChannel(canvasCtx, values, width, height, color, maxValue) {
+function drawHistogramChannel(
+  canvasCtx,
+  values,
+  width,
+  height,
+  color,
+  maxValue,
+) {
   canvasCtx.beginPath();
   values.forEach((value, index) => {
     const x = (index / 255) * width;
@@ -155,7 +180,12 @@ function drawRgbHistogram(imageData, width, height) {
 
   const histogramCtx = rgbHistogram.getContext("2d");
   const histogram = buildRgbHistogram(imageData);
-  const maxValue = Math.max(1, ...histogram.red, ...histogram.green, ...histogram.blue);
+  const maxValue = Math.max(
+    1,
+    ...histogram.red,
+    ...histogram.green,
+    ...histogram.blue,
+  );
   const pixelRatio = window.devicePixelRatio || 1;
   const displayWidth = rgbHistogram.clientWidth || rgbHistogram.width;
   const displayHeight = rgbHistogram.clientHeight || rgbHistogram.height;
@@ -189,146 +219,435 @@ function drawRgbHistogram(imageData, width, height) {
   histogramCtx.stroke();
 
   histogramCtx.globalAlpha = 0.9;
-  drawHistogramChannel(histogramCtx, histogram.red, chartWidth, chartHeight, "#d73535", maxValue);
-  drawHistogramChannel(histogramCtx, histogram.green, chartWidth, chartHeight, "#159447", maxValue);
-  drawHistogramChannel(histogramCtx, histogram.blue, chartWidth, chartHeight, "#2468d8", maxValue);
+  drawHistogramChannel(
+    histogramCtx,
+    histogram.red,
+    chartWidth,
+    chartHeight,
+    "#d73535",
+    maxValue,
+  );
+  drawHistogramChannel(
+    histogramCtx,
+    histogram.green,
+    chartWidth,
+    chartHeight,
+    "#159447",
+    maxValue,
+  );
+  drawHistogramChannel(
+    histogramCtx,
+    histogram.blue,
+    chartWidth,
+    chartHeight,
+    "#2468d8",
+    maxValue,
+  );
   histogramCtx.restore();
 
   histogramCtx.fillStyle = "#627080";
   histogramCtx.font = "12px Arial";
   histogramCtx.fillText("0", padding.left, displayHeight - 8);
-  histogramCtx.fillText("128", padding.left + chartWidth / 2 - 10, displayHeight - 8);
-  histogramCtx.fillText("255", padding.left + chartWidth - 20, displayHeight - 8);
+  histogramCtx.fillText(
+    "128",
+    padding.left + chartWidth / 2 - 10,
+    displayHeight - 8,
+  );
+  histogramCtx.fillText(
+    "255",
+    padding.left + chartWidth - 20,
+    displayHeight - 8,
+  );
   histogramCtx.fillText("Piksel", 6, 18);
 
   setText(histogramStatus, `${width}x${height} | 256 bin`);
 }
 
-function updateMathPanel(sample, stageWidth, stageHeight, halfWidth, halfHeight) {
+function updateMathPanel(
+  sample,
+  stageWidth,
+  stageHeight,
+  halfWidth,
+  halfHeight,
+) {
+  // Panel rumus menghubungkan nilai realtime dengan materi PCD yang dipresentasikan.
   const fullPixels = video.videoWidth * video.videoHeight;
   const processPixels = Math.round(fullPixels * 0.5 * 0.5);
-  const reduction = fullPixels ? Math.round((1 - processPixels / fullPixels) * 100) : 0;
-  const bestFace = lastFaces.find((face) => face.distance !== null) || lastFaces[0];
-  const distance = bestFace && bestFace.distance !== null ? bestFace.distance : null;
-  const cosine = bestFace && bestFace.cosine_similarity !== null ? bestFace.cosine_similarity : null;
+  const reduction = fullPixels
+    ? Math.round((1 - processPixels / fullPixels) * 100)
+    : 0;
+  const bestFace =
+    displayFaces.find((face) => face.distance !== null) ||
+    lastFaces.find((face) => face.distance !== null) ||
+    displayFaces[0] ||
+    lastFaces[0];
+  const distance =
+    bestFace && bestFace.distance !== null ? bestFace.distance : null;
+  const cosine =
+    bestFace && bestFace.cosine_similarity !== null
+      ? bestFace.cosine_similarity
+      : null;
   const threshold = bestFace && bestFace.threshold ? bestFace.threshold : 0.5;
-  const decision = distance === null ? "menunggu wajah" : distance <= threshold ? "dikenal" : "tidak dikenal";
+  const decision =
+    distance === null
+      ? "menunggu wajah"
+      : distance <= threshold
+        ? "dikenal"
+        : "tidak dikenal";
   const normalizedGray = sample.gray / 255;
 
   setText(metricResolution, `${video.videoWidth} x ${video.videoHeight}`);
   setText(metricPixels, formatNumber(fullPixels));
-  setText(metricResize, `${stageWidth}x${stageHeight} -> ${halfWidth}x${halfHeight}`);
+  setText(
+    metricResize,
+    `${stageWidth}x${stageHeight} -> ${halfWidth}x${halfHeight}`,
+  );
   setText(metricReduction, `${reduction}% lebih ringan`);
   setText(metricFps, `${currentPipelineFps.toFixed(1)} fps`);
-  setText(metricFaces, String(lastFaces.length));
+  const visibleTrackedFaces = displayFaces.filter(
+    (face) => (face.opacity === undefined ? 1 : face.opacity) > 0.05,
+  );
+  setText(metricFaces, String(visibleTrackedFaces.length || lastFaces.length));
   setText(metricAiFps, lastAiFps ? `${lastAiFps.toFixed(2)} fps` : "-");
-  setText(metricProcessTime, lastProcessTime ? `${lastProcessTime.toFixed(4)}s` : "-");
-  setText(formulaGray, `Y = 0.299(${sample.r}) + 0.587(${sample.g}) + 0.114(${sample.b}) = ${sample.gray}`);
-  setText(formulaNormalize, `I' = ${sample.gray} / 255 = ${normalizedGray.toFixed(4)}`);
-  setText(formulaResize, `W' = 0.5W, H' = 0.5H, piksel proses = ${formatNumber(processPixels)}`);
-  setText(formulaDistance, distance === null ? "d = sqrt(sum((encoding_db - encoding_frame)^2))" : `d terbaik = ${distance}`);
-  setText(formulaCosine, cosine === null ? "cos(theta) = (A . B) / (|A| |B|)" : `cos(theta) terbaik = ${Number(cosine).toFixed(4)}`);
-  setText(formulaDecision, distance === null ? `d <= ${threshold} -> dikenal` : `${distance} <= ${threshold} -> ${decision}`);
-  setText(mathStatus, lastRecognitionMs ? `AI ${lastRecognitionMs} ms` : "Realtime");
+  setText(
+    metricProcessTime,
+    lastProcessTime ? `${lastProcessTime.toFixed(4)}s` : "-",
+  );
+  setText(
+    formulaGray,
+    `Y = 0.299(${sample.r}) + 0.587(${sample.g}) + 0.114(${sample.b}) = ${sample.gray}`,
+  );
+  setText(
+    formulaNormalize,
+    `I' = ${sample.gray} / 255 = ${normalizedGray.toFixed(4)}`,
+  );
+  setText(
+    formulaResize,
+    `W' = 0.5W, H' = 0.5H, piksel proses = ${formatNumber(processPixels)}`,
+  );
+  setText(
+    formulaDistance,
+    distance === null
+      ? "d = sqrt(sum((encoding_db - encoding_frame)^2))"
+      : `d terbaik = ${distance}`,
+  );
+  setText(
+    formulaCosine,
+    cosine === null
+      ? "cos(theta) = (A . B) / (|A| |B|)"
+      : `cos(theta) terbaik = ${Number(cosine).toFixed(4)}`,
+  );
+  setText(
+    formulaDecision,
+    distance === null
+      ? `d <= ${threshold} -> dikenal`
+      : `${distance} <= ${threshold} -> ${decision}`,
+  );
+  setText(
+    mathStatus,
+    lastRecognitionMs ? `AI ${lastRecognitionMs} ms` : "Realtime",
+  );
 }
 
 function drawLabel(canvasCtx, text, x, y, color = "#0b7a75") {
   canvasCtx.font = "15px Arial";
   const labelWidth = canvasCtx.measureText(text).width + 14;
+  const labelX = clamp(x, 0, Math.max(0, canvasCtx.canvas.width - labelWidth));
+  const labelY = Math.max(0, y - 27);
   canvasCtx.fillStyle = color;
-  canvasCtx.fillRect(x, Math.max(0, y - 27), labelWidth, 27);
+  canvasCtx.fillRect(labelX, labelY, labelWidth, 27);
   canvasCtx.fillStyle = "#fff";
-  canvasCtx.fillText(text, x + 7, Math.max(18, y - 8));
+  canvasCtx.fillText(text, labelX + 7, Math.max(18, labelY + 19));
+}
+
+function getVideoRenderRect(canvas) {
+  // Video memakai object-fit: cover, jadi area render asli bisa lebih besar dari canvas.
+  // Perhitungan ini menjaga kotak wajah tetap sejajar dengan wajah di layar.
+  const canvasWidth = canvas.width;
+  const canvasHeight = canvas.height;
+  if (!video.videoWidth || !video.videoHeight || !canvasWidth || !canvasHeight) {
+    return {
+      x: 0,
+      y: 0,
+      scaleX: 1,
+      scaleY: 1,
+    };
+  }
+
+  const videoRatio = video.videoWidth / video.videoHeight;
+  const canvasRatio = canvasWidth / canvasHeight;
+  if (canvasRatio > videoRatio) {
+    const renderHeight = canvasWidth / videoRatio;
+    return {
+      x: 0,
+      y: (canvasHeight - renderHeight) / 2,
+      scaleX: canvasWidth / video.videoWidth,
+      scaleY: renderHeight / video.videoHeight,
+    };
+  }
+
+  const renderWidth = canvasHeight * videoRatio;
+  return {
+    x: (canvasWidth - renderWidth) / 2,
+    y: 0,
+    scaleX: renderWidth / video.videoWidth,
+    scaleY: canvasHeight / video.videoHeight,
+  };
 }
 
 function drawDetectedFaces(canvasCtx, canvas, faces) {
-  const scaleX = canvas.width / video.videoWidth;
-  const scaleY = canvas.height / video.videoHeight;
+  // Satu fungsi dipakai untuk overlay kamera utama dan preview hasil di pipeline.
+  const renderRect = getVideoRenderRect(canvas);
 
   faces.forEach((face) => {
+    canvasCtx.save();
+    canvasCtx.globalAlpha = face.opacity === undefined ? 1 : face.opacity;
     const box = face.box;
-    const left = box.left * scaleX;
-    const top = box.top * scaleY;
-    const width = (box.right - box.left) * scaleX;
-    const height = (box.bottom - box.top) * scaleY;
-    const known = face.name !== "Tidak Dikenal";
+    const left = renderRect.x + box.left * renderRect.scaleX;
+    const top = renderRect.y + box.top * renderRect.scaleY;
+    const width = (box.right - box.left) * renderRect.scaleX;
+    const height = (box.bottom - box.top) * renderRect.scaleY;
+    const known = face.name !== UNKNOWN_FACE_NAME;
     const color = known ? "#0b7a75" : "#bf2f36";
-    const distance = face.distance === null ? "-" : Number(face.distance).toFixed(3);
-    const label = known ? `${face.name} | d=${distance}` : `${face.status} | d=${distance}`;
+    const distance =
+      face.distance === null ? "-" : Number(face.distance).toFixed(3);
+    const label = known
+      ? `${face.name} | d=${distance}`
+      : `${face.status} | d=${distance}`;
 
     canvasCtx.strokeStyle = color;
     canvasCtx.lineWidth = 3;
     canvasCtx.strokeRect(left, top, width, height);
     drawLabel(canvasCtx, label, left, top, color);
+    canvasCtx.restore();
   });
 }
 
-function centerOf(face) {
-  const box = face.box;
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function copyBox(box) {
+  return {
+    top: box.top,
+    right: box.right,
+    bottom: box.bottom,
+    left: box.left,
+  };
+}
+
+function centerOfBox(box) {
   return {
     x: (box.left + box.right) / 2,
     y: (box.top + box.bottom) / 2,
   };
 }
 
+function centerOf(face) {
+  return centerOfBox(face.targetBox || face.box);
+}
+
+function boxSize(box) {
+  return {
+    width: Math.max(1, box.right - box.left),
+    height: Math.max(1, box.bottom - box.top),
+  };
+}
+
+function smoothTargetBox(previousBox, nextBox) {
+  // Target box dihaluskan agar hasil deteksi yang naik-turun tidak terlihat patah-patah.
+  const output = {};
+  ["top", "right", "bottom", "left"].forEach((key) => {
+    const diff = nextBox[key] - previousBox[key];
+    // Smoother blending with reduced deadzone for better continuity
+    output[key] =
+      Math.abs(diff) < TRACKING_DEADZONE_PX
+        ? previousBox[key]
+        : previousBox[key] + diff * TRACKING_TARGET_BLEND;
+  });
+  return output;
+}
+
+function calculateVelocity(previousBox, nextBox, elapsedMs) {
+  // Velocity dipakai untuk memperkirakan posisi saat backend belum mengirim hasil frame baru.
+  const velocity = {};
+  const frameTime = Math.max(8, elapsedMs);
+  ["top", "right", "bottom", "left"].forEach((key) => {
+    const rawVelocity = (nextBox[key] - previousBox[key]) / (frameTime / 16.67);
+    velocity[key] = clamp(
+      rawVelocity,
+      -TRACKING_MAX_VELOCITY,
+      TRACKING_MAX_VELOCITY,
+    );
+  });
+  return velocity;
+}
+
+function blendVelocity(previousVelocity, nextVelocity) {
+  const velocity = {};
+  ["top", "right", "bottom", "left"].forEach((key) => {
+    const previousValue = previousVelocity ? previousVelocity[key] || 0 : 0;
+    velocity[key] = previousValue * 0.65 + nextVelocity[key] * 0.35;
+  });
+  return velocity;
+}
+
+function isKnownFace(face) {
+  return face && face.name && face.name !== UNKNOWN_FACE_NAME;
+}
+
+function applyTrackedMetadata(tracked, face, now) {
+  // Label wajah yang sudah dikenali dibuat sticky sebentar agar tidak berkedip
+  // ketika satu frame berubah menjadi "Tidak Dikenal".
+  if (isKnownFace(face)) {
+    tracked.name = face.name;
+    tracked.status = face.status;
+    tracked.confidence = face.confidence;
+    tracked.distance = face.distance;
+    tracked.cosine_similarity = face.cosine_similarity;
+    tracked.threshold = face.threshold;
+    tracked.lastKnownSeen = now;
+    return;
+  }
+
+  const shouldKeepKnownLabel =
+    isKnownFace(tracked) &&
+    now - (tracked.lastKnownSeen || tracked.lastSeen || now) <
+      TRACKING_LABEL_STICKY_MS;
+
+  if (!shouldKeepKnownLabel) {
+    tracked.name = face.name;
+    tracked.status = face.status;
+    tracked.confidence = face.confidence;
+    tracked.distance = face.distance;
+    tracked.cosine_similarity = face.cosine_similarity;
+    tracked.threshold = face.threshold;
+  }
+}
+
 function updateTrackedFaces(faces) {
+  // Mencocokkan hasil deteksi baru dengan track lama berdasarkan jarak pusat wajah.
+  // Tujuannya agar kotak wajah tetap menjadi object yang sama antar frame.
   const now = performance.now();
   const used = new Set();
 
   faces.forEach((face) => {
-    const faceCenter = centerOf(face);
+    const rawBox = copyBox(face.box);
+    const faceCenter = centerOfBox(rawBox);
+    const faceSize = boxSize(rawBox);
     let bestIndex = -1;
     let bestDistance = Infinity;
 
     displayFaces.forEach((tracked, index) => {
       if (used.has(index)) return;
       const trackedCenter = centerOf(tracked);
-      const distance = Math.hypot(faceCenter.x - trackedCenter.x, faceCenter.y - trackedCenter.y);
+      const trackedSize = boxSize(tracked.targetBox || tracked.box);
+      const maxDim = Math.max(
+        faceSize.width,
+        faceSize.height,
+        trackedSize.width,
+        trackedSize.height,
+      );
+      const matchLimit = Math.max(120, Math.min(380, maxDim * 2.2));
+
+      let identityPenalty = 0;
+      if (tracked.name !== UNKNOWN_FACE_NAME && face.name !== UNKNOWN_FACE_NAME) {
+        identityPenalty = tracked.name === face.name ? 0 : 15;
+      }
+
+      const distance =
+        Math.hypot(
+          faceCenter.x - trackedCenter.x,
+          faceCenter.y - trackedCenter.y,
+        ) + identityPenalty;
       if (distance < bestDistance) {
         bestDistance = distance;
         bestIndex = index;
+        tracked.matchLimit = matchLimit;
       }
     });
 
-    if (bestIndex >= 0 && bestDistance < 180) {
+    if (bestIndex >= 0 && bestDistance < displayFaces[bestIndex].matchLimit) {
       const tracked = displayFaces[bestIndex];
-      tracked.targetBox = { ...face.box };
-      tracked.name = face.name;
-      tracked.status = face.status;
-      tracked.confidence = face.confidence;
-      tracked.distance = face.distance;
-      tracked.cosine_similarity = face.cosine_similarity;
-      tracked.threshold = face.threshold;
+      const previousTarget = tracked.targetBox || tracked.box;
+      const elapsedMs = Math.max(16, now - (tracked.lastUpdate || now));
+      const nextTarget = smoothTargetBox(previousTarget, rawBox);
+      const nextVelocity = calculateVelocity(
+        previousTarget,
+        nextTarget,
+        elapsedMs,
+      );
+      tracked.targetBox = nextTarget;
+      tracked.velocity = blendVelocity(tracked.velocity, nextVelocity);
+      applyTrackedMetadata(tracked, face, now);
       tracked.lastSeen = now;
+      tracked.lastUpdate = now;
+      tracked.opacity = 1;
       used.add(bestIndex);
       return;
     }
 
     displayFaces.push({
       ...face,
-      box: { ...face.box },
-      targetBox: { ...face.box },
+      box: rawBox,
+      targetBox: copyBox(rawBox),
+      velocity: { top: 0, right: 0, bottom: 0, left: 0 },
       lastSeen: now,
+      lastUpdate: now,
+      lastKnownSeen: isKnownFace(face) ? now : 0,
+      opacity: 1,
+      matchCount: 0,
+      noDetectCount: 0,
     });
   });
 
-  displayFaces = displayFaces.filter((face) => now - face.lastSeen < 1400);
+  displayFaces = displayFaces.filter(
+    (face) => now - face.lastSeen < TRACKING_KEEP_MS,
+  );
 }
 
 function animateOverlay() {
+  // Overlay digambar dengan requestAnimationFrame agar gerakan kotak tetap halus
+  // walaupun request AI ke backend berjalan lebih lambat dari refresh layar.
   if (!cameraReady) return;
   const now = performance.now();
-  displayFaces = displayFaces.filter((face) => now - face.lastSeen < 1400);
+  const elapsedMs = previousOverlayAt
+    ? Math.min(50, now - previousOverlayAt)
+    : 16.67;
+  previousOverlayAt = now;
+  const ease =
+    1 - Math.pow(1 - TRACKING_EASE, Math.max(0.5, elapsedMs) / 16.67);
+
+  displayFaces = displayFaces.filter(
+    (face) => now - face.lastSeen < TRACKING_KEEP_MS,
+  );
   displayFaces.forEach((face) => {
+    const missingMs = now - face.lastSeen;
+    const predictMs = Math.min(TRACKING_MAX_PREDICT_MS, Math.max(0, missingMs));
+    const predictFrames = predictMs / 16.67;
+    const velocity = face.velocity || { top: 0, right: 0, bottom: 0, left: 0 };
+    const targetBox = face.targetBox || face.box;
+
     ["top", "right", "bottom", "left"].forEach((key) => {
-      face.box[key] += (face.targetBox[key] - face.box[key]) * TRACKING_SMOOTHING;
+      const predicted = targetBox[key] + velocity[key] * predictFrames;
+      face.box[key] += (predicted - face.box[key]) * ease;
     });
+
+    if (missingMs <= TRACKING_FADE_AFTER_MS) {
+      face.opacity = 1;
+    } else {
+      const fadeProgress =
+        (missingMs - TRACKING_FADE_AFTER_MS) /
+        (TRACKING_KEEP_MS - TRACKING_FADE_AFTER_MS);
+      face.opacity = Math.max(0, 1 - Math.pow(fadeProgress, 1.5));
+    }
   });
   drawFaces(displayFaces);
   overlayAnimationId = requestAnimationFrame(animateOverlay);
 }
 
 function drawPipelineStages() {
+  // Preview pipeline PCD diperbarui periodik: RGB asli, grayscale, resize, dan hasil deteksi.
   if (!cameraReady || !video.videoWidth || !video.videoHeight) return;
 
   const now = performance.now();
@@ -338,7 +657,9 @@ function drawPipelineStages() {
   lastPipelineAt = now;
 
   const stageWidth = 320;
-  const stageHeight = Math.round(stageWidth * (video.videoHeight / video.videoWidth));
+  const stageHeight = Math.round(
+    stageWidth * (video.videoHeight / video.videoWidth),
+  );
   const halfWidth = Math.max(1, Math.round(stageWidth * 0.5));
   const halfHeight = Math.max(1, Math.round(stageHeight * 0.5));
 
@@ -374,19 +695,49 @@ function drawPipelineStages() {
   drawVideoFrame(tempCtx, halfWidth, halfHeight);
   resizeCtx.imageSmoothingEnabled = false;
   resizeCtx.clearRect(0, 0, stageWidth, stageHeight);
-  resizeCtx.drawImage(temp, 0, 0, halfWidth, halfHeight, 0, 0, stageWidth, stageHeight);
+  resizeCtx.drawImage(
+    temp,
+    0,
+    0,
+    halfWidth,
+    halfHeight,
+    0,
+    0,
+    stageWidth,
+    stageHeight,
+  );
   resizeCtx.imageSmoothingEnabled = true;
 
   const resultCtx = stageResult.getContext("2d");
   drawVideoFrame(resultCtx, stageWidth, stageHeight);
-  drawDetectedFaces(resultCtx, stageResult, displayFaces.length ? displayFaces : lastFaces);
-  setText(pipelineStatus, `CCTV 30 FPS | ${video.videoWidth}x${video.videoHeight} -> ${halfWidth}x${halfHeight}`);
+  drawDetectedFaces(
+    resultCtx,
+    stageResult,
+    displayFaces.length ? displayFaces : lastFaces,
+  );
+  setText(
+    pipelineStatus,
+    `CCTV 30 FPS | ${video.videoWidth}x${video.videoHeight} -> ${halfWidth}x${halfHeight}`,
+  );
   updateMathPanel(centerSample, stageWidth, stageHeight, halfWidth, halfHeight);
 }
 
 function resizeOverlay() {
-  overlay.width = video.clientWidth;
-  overlay.height = video.clientHeight;
+  // Canvas hanya di-resize saat ukuran berubah; resize setiap frame akan membuat overlay berkedip.
+  if (!overlay || !video) return false;
+  const width = Math.round(video.clientWidth);
+  const height = Math.round(video.clientHeight);
+  if (!width || !height) return false;
+  let changed = false;
+  if (overlay.width !== width) {
+    overlay.width = width;
+    changed = true;
+  }
+  if (overlay.height !== height) {
+    overlay.height = height;
+    changed = true;
+  }
+  return changed;
 }
 
 function drawFaces(faces) {
@@ -398,17 +749,26 @@ function drawFaces(faces) {
 
 function renderResults(faces) {
   if (!faces.length) {
-    setHtml(resultList, `<div class="empty-state">Belum ada wajah terdeteksi.</div>`);
+    setHtml(
+      resultList,
+      `<div class="empty-state">Belum ada wajah terdeteksi.</div>`,
+    );
     return;
   }
 
-  setHtml(resultList, faces
-    .map((face) => {
-      const confidence = face.confidence ? `${face.confidence}%` : "-";
-      const distance = face.distance === null ? "-" : Number(face.distance).toFixed(4);
-      const threshold = Number(face.threshold).toFixed(2);
-      const cosine = face.cosine_similarity === null ? "-" : Number(face.cosine_similarity).toFixed(4);
-      return `
+  setHtml(
+    resultList,
+    faces
+      .map((face) => {
+        const confidence = face.confidence ? `${face.confidence}%` : "-";
+        const distance =
+          face.distance === null ? "-" : Number(face.distance).toFixed(4);
+        const threshold = Number(face.threshold).toFixed(2);
+        const cosine =
+          face.cosine_similarity === null
+            ? "-"
+            : Number(face.cosine_similarity).toFixed(4);
+        return `
         <div class="result-row">
           <div>
             <strong>Nama: ${face.name}</strong><br>
@@ -417,11 +777,13 @@ function renderResults(faces) {
           </div>
         </div>
       `;
-    })
-    .join(""));
+      })
+      .join(""),
+  );
 }
 
 async function api(path, options = {}) {
+  // Wrapper fetch untuk semua endpoint Flask agar error JSON ditampilkan seragam di UI.
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
     ...options,
@@ -434,24 +796,31 @@ async function api(path, options = {}) {
 }
 
 async function refreshStatus() {
+  // Mengecek koneksi MySQL dan jumlah encoding tersimpan.
   try {
     const data = await api("/api/status");
-    setText(dbStatus, `Database ${data.database} aktif di ${data.host} | ${data.count} encoding`);
+    setText(
+      dbStatus,
+      `Database ${data.database} aktif di ${data.host} | ${data.count} encoding`,
+    );
   } catch (error) {
     setText(dbStatus, `Database belum aktif: ${error.message}`);
   }
 }
 
 async function refreshFaces() {
+  // Mengambil daftar nama wajah dari database untuk panel samping.
   try {
     const data = await api("/api/faces");
     if (!data.faces.length) {
       setHtml(faceList, `<div class="empty-state">Database kosong.</div>`);
       return;
     }
-    setHtml(faceList, data.faces
-      .map(
-        (face) => `
+    setHtml(
+      faceList,
+      data.faces
+        .map(
+          (face) => `
           <div class="face-row">
             <div>
               <strong>${face.name}</strong><br>
@@ -459,15 +828,17 @@ async function refreshFaces() {
             </div>
             <button class="delete-btn" type="button" data-name="${face.name}">Hapus</button>
           </div>
-        `
-      )
-      .join(""));
+        `,
+        )
+        .join(""),
+    );
   } catch (error) {
     setHtml(faceList, `<div class="error-state">${error.message}</div>`);
   }
 }
 
 async function startCamera() {
+  // Browser meminta akses webcam, lalu video stream dipakai untuk capture dan preview.
   const stream = await navigator.mediaDevices.getUserMedia({
     video: {
       width: { ideal: 640 },
@@ -493,6 +864,7 @@ async function startCamera() {
 }
 
 async function recognizeOnce() {
+  // Satu siklus recognition: capture frame -> POST ke backend -> update track dan hasil.
   if (!cameraReady || !recognizing || recognizeRequestRunning) return;
   recognizeRequestRunning = true;
   try {
@@ -505,8 +877,15 @@ async function recognizeOnce() {
     lastAiFps = data.fps || 0;
     lastProcessTime = data.process_time || 0;
     lastFaces = data.faces;
-    updateTrackedFaces(data.faces);
-    renderResults(data.faces);
+
+    if (data.faces && data.faces.length > 0) {
+      updateTrackedFaces(data.faces);
+    }
+
+    const visibleFaces = displayFaces.filter(
+      (face) => (face.opacity === undefined ? 1 : face.opacity) > 0.05,
+    );
+    renderResults(visibleFaces.length ? visibleFaces : lastFaces);
     drawPipelineStages();
   } catch (error) {
     setHtml(resultList, `<div class="error-state">${error.message}</div>`);
@@ -516,26 +895,31 @@ async function recognizeOnce() {
 }
 
 async function recognizeLoop() {
+  // Loop recognition berjalan dengan setTimeout agar request backend tidak saling menumpuk.
   if (!recognizing) return;
   await recognizeOnce();
   recognizeTimer = setTimeout(recognizeLoop, RECOGNITION_DELAY_MS);
 }
 
 function toggleRecognize() {
+  // Tombol mulai/stop hanya mengatur loop recognition dan membersihkan overlay saat stop.
   recognizing = !recognizing;
   setText(toggleRecognizeBtn, recognizing ? "Stop Deteksi" : "Mulai Deteksi");
   if (recognizing) {
+    previousOverlayAt = 0;
     recognizeLoop();
   } else {
     clearTimeout(recognizeTimer);
     lastFaces = [];
     displayFaces = [];
+    previousOverlayAt = 0;
     if (ctx) ctx.clearRect(0, 0, overlay.width, overlay.height);
     drawPipelineStages();
   }
 }
 
 async function registerFace() {
+  // Registrasi mengambil 5 sample frame, lalu backend menyimpan rata-rata encoding ke MySQL.
   const name = nameInput ? nameInput.value.trim() : "";
   if (!name || !cameraReady) return;
 
@@ -553,7 +937,10 @@ async function registerFace() {
       method: "POST",
       body: JSON.stringify({ name, images }),
     });
-    setText(registerStatus, `${data.name} tersimpan dari ${data.samples} sample`);
+    setText(
+      registerStatus,
+      `${data.name} tersimpan dari ${data.samples} sample`,
+    );
     if (nameInput) nameInput.value = "";
     await refreshStatus();
     await refreshFaces();
@@ -565,17 +952,22 @@ async function registerFace() {
 }
 
 if (startCameraBtn) startCameraBtn.addEventListener("click", startCamera);
-if (toggleRecognizeBtn) toggleRecognizeBtn.addEventListener("click", toggleRecognize);
+if (toggleRecognizeBtn)
+  toggleRecognizeBtn.addEventListener("click", toggleRecognize);
 if (registerBtn) registerBtn.addEventListener("click", registerFace);
 if (refreshFacesBtn) refreshFacesBtn.addEventListener("click", refreshFaces);
-if (mirrorCameraInput) mirrorCameraInput.addEventListener("change", updateMirrorMode);
+if (mirrorCameraInput)
+  mirrorCameraInput.addEventListener("change", updateMirrorMode);
 window.addEventListener("resize", resizeOverlay);
 
 if (faceList) {
   faceList.addEventListener("click", async (event) => {
+    // Event delegation: tombol hapus dibuat dinamis setelah data /api/faces diterima.
     const button = event.target.closest("[data-name]");
     if (!button) return;
-    await api(`/api/faces/${encodeURIComponent(button.dataset.name)}`, { method: "DELETE" });
+    await api(`/api/faces/${encodeURIComponent(button.dataset.name)}`, {
+      method: "DELETE",
+    });
     await refreshStatus();
     await refreshFaces();
   });

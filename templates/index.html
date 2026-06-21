@@ -8,6 +8,7 @@
   </head>
   <body>
     <main class="app-shell">
+      <!-- Header utama: status koneksi database dan akses cepat ke halaman tabel. -->
       <header class="topbar">
         <div>
           <h1>Face Recognition</h1>
@@ -21,6 +22,7 @@
 
       <section class="workspace">
         <div class="main-column">
+          <!-- Panel kamera: video asli dari browser dan canvas overlay untuk kotak wajah. -->
           <div class="camera-panel">
             <div class="video-wrap">
               <video id="video" autoplay playsinline muted></video>
@@ -36,6 +38,7 @@
             </div>
           </div>
 
+          <!-- Pipeline visual untuk presentasi tahapan PCD dari RGB sampai hasil deteksi. -->
           <section class="pipeline-panel">
             <div class="section-head">
               <h2>Tahapan Citra Realtime</h2>
@@ -73,6 +76,7 @@
             </div>
           </section>
 
+          <!-- Panel konsep: menjelaskan kanal RGB dan histogram sebagai dasar pengolahan citra. -->
           <section class="concept-panel">
             <div class="section-head">
               <h2>Konsep Pengolahan Citra Digital</h2>
@@ -107,6 +111,7 @@
         </div>
 
         <aside class="side-panel">
+          <!-- Form registrasi: nama + beberapa sample frame dikirim ke /api/register. -->
           <section class="section">
             <h2>Registrasi</h2>
             <div class="form-row">
@@ -119,6 +124,7 @@
             <p id="registerStatus" class="muted">0/5 sample</p>
           </section>
 
+          <!-- Panel angka dan rumus: metrik runtime ditampilkan agar proses bisa dijelaskan. -->
           <section class="section metric-section">
             <div class="section-head">
               <h2>Angka & Rumus</h2>
@@ -223,6 +229,7 @@
             </div>
           </section>
 
+          <!-- Daftar data wajah dari MySQL: diisi lewat endpoint /api/faces. -->
           <section class="section">
             <div class="section-head">
               <h2>Database</h2>
@@ -231,6 +238,7 @@
             <div id="faceList" class="face-list"></div>
           </section>
 
+          <!-- Hasil recognition realtime: nama, status, distance, cosine, dan akurasi. -->
           <section class="section">
             <h2>Hasil</h2>
             <div id="resultList" class="result-list"></div>
@@ -239,6 +247,6 @@
       </section>
     </main>
 
-    <script src="{{ url_for('static', filename='app.js') }}?v=pcd4"></script>
+    <script src="{{ url_for('static', filename='app.js') }}?v=pcd6"></script>
   </body>
 </html>

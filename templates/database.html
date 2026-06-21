@@ -8,6 +8,7 @@
   </head>
   <body>
     <main class="app-shell">
+      <!-- Header halaman database: menunjukkan database dan host yang sedang dipakai. -->
       <header class="topbar">
         <div>
           <h1>Database Wajah</h1>
@@ -16,8 +17,10 @@
         <a class="link-button" href="/">Buka Kamera</a>
       </header>
 
+      <!-- Tabel ini membaca data dari FaceDatabase.rows() untuk bukti penyimpanan encoding. -->
       <section class="db-page section">
         {% if error %}
+          <!-- Error koneksi ditampilkan agar masalah MySQL mudah dijelaskan saat demo. -->
           <div class="error-state">{{ error }}</div>
         {% elif rows %}
           <div class="table-wrap">
@@ -26,7 +29,9 @@
                 <tr>
                   <th>ID</th>
                   <th>Nama</th>
+                  <!-- Dimensi encoding menunjukkan panjang vektor fitur wajah. -->
                   <th>Dimensi</th>
+                  <!-- Hanya nilai awal yang ditampilkan agar tabel tetap ringkas. -->
                   <th>Nilai Awal Encoding</th>
                   <th>Dibuat</th>
                 </tr>
@@ -45,6 +50,7 @@
             </table>
           </div>
         {% else %}
+          <!-- State kosong muncul saat database sudah konek tetapi belum ada wajah terdaftar. -->
           <div class="empty-state">Tabel faces masih kosong.</div>
         {% endif %}
       </section>

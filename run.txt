@@ -1,0 +1,2 @@
+cd "C:\Users\User\Desktop\face-recognition"
+.\.venv\Scripts\python.exe web_app.py

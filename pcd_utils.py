@@ -9,16 +9,34 @@ from __future__ import annotations
 
 import os
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 import cv2
-import face_recognition
 import numpy as np
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+_face_recognition = None
+
+
+def get_face_recognition():
+    # Import face_recognition dibuat lazy agar aplikasi lebih cepat start.
+    # Library baru dimuat saat deteksi/registrasi pertama kali digunakan.
+    global _face_recognition
+    if _face_recognition is None:
+        warnings.filterwarnings(
+            "ignore",
+            message=r"pkg_resources is deprecated as an API\..*",
+            category=UserWarning,
+            module=r"face_recognition_models",
+        )
+        import face_recognition
+
+        _face_recognition = face_recognition
+    return _face_recognition
 
 
 @dataclass
@@ -85,6 +103,10 @@ def recognize_face(
     threshold: float,
 ) -> RecognitionMetrics:
     """Cari wajah paling mirip menggunakan Euclidean Distance sebagai keputusan utama."""
+    # Alur presentasi:
+    # 1. Hitung jarak encoding kamera ke semua encoding database.
+    # 2. Ambil jarak terkecil sebagai kandidat identitas.
+    # 3. Bandingkan jarak tersebut dengan threshold untuk keputusan akhir.
     known_list = list(known_encodings)
     if not known_list:
         return RecognitionMetrics(None, None, threshold, "Database Kosong", 0.0, None)
@@ -115,6 +137,8 @@ def calculate_fps(start_time: float, end_time: float | None = None) -> tuple[flo
 
 def evaluate_classification(tp: int, tn: int, fp: int, fn: int) -> dict[str, float]:
     """Fungsi evaluasi opsional saat data uji sudah tersedia."""
+    # Fungsi ini tidak wajib untuk runtime, tetapi berguna saat presentasi evaluasi
+    # akurasi jika sudah ada data uji berlabel.
     total = tp + tn + fp + fn
     accuracy = ((tp + tn) / total * 100.0) if total else 0.0
     precision = (tp / (tp + fp)) if (tp + fp) else 0.0
@@ -155,8 +179,11 @@ def load_known_faces_from_dataset(dataset_dir: str) -> tuple[list[np.ndarray], l
     encodings: list[np.ndarray] = []
     names: list[str] = []
     warnings: list[str] = []
+    face_recognition = get_face_recognition()
 
     for image_path in sorted(image_paths):
+        # Dataset folder dibaca satu per satu, lalu nama orang diambil dari
+        # nama folder parent agar struktur dataset mudah dijelaskan.
         image_bgr = cv2.imread(str(image_path))
         if image_bgr is None:
             warnings.append(f"Gambar tidak terbaca, dilewati: {image_path}")
