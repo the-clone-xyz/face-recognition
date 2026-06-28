@@ -87,7 +87,7 @@ def calculate_euclidean_distance(current_encoding: np.ndarray, known_encoding: n
 def calculate_cosine_similarity(vector_a: np.ndarray, vector_b: np.ndarray) -> float:
     """Hitung cosine similarity antar vektor fitur wajah.
 
-    Rumus:
+    Rumus:`
         cos(theta) = (A . B) / (|A| |B|)
     """
     norm_a = np.linalg.norm(vector_a)
